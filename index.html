@@ -1034,40 +1034,53 @@
     wallBackdrop.setPosition(0, ROW1_Y + (ROWS-1)*(BRICK_H+GAP_Y)*0.5, WALL_Z - 0.12);
     stageEntity.addChild(wallBackdrop);
 
-    // Gaussian Splat environment — rendered in a dedicated background layer so
-    // game objects (bricks, wall) always draw in front regardless of GS depth.
-    //
-    // Layer order: [gsLayer] → [LAYERID_WORLD (clearDepth=true)] → [UI]
-    // GS renders first; world layer clears depth before drawing game objects,
-    // so game objects always win the depth test against the GS environment.
-    const gsLayer = new pc.Layer({ name: 'GSBackground' });
-    app.scene.layers.insert(gsLayer, 0);
+    // Gaussian Splat environment — transform values tuned to this scene
+    const GS_CONFIG = {
+      url:      'gs/scene.sog',
+      position: { x: -0.1,  y: -0.32, z: -2.35 },
+      rotation: { x: 180,   y: 0,     z: 0      },
+      scale:    0.42
+    };
 
-    const worldLayer = app.scene.layers.getLayerById(pc.LAYERID_WORLD);
-    if (worldLayer) worldLayer.clearDepthBuffer = true;
+    gsplatEntity = new pc.Entity('gsplat_env');
+    gsplatEntity.enabled = false;
+    stageEntity.addChild(gsplatEntity);
 
-    // Register the new layer with the camera
-    const _camLayers = Array.from(cameraEntity.camera.layers || []);
-    if (!_camLayers.includes(gsLayer.id)) {
-      cameraEntity.camera.layers = [gsLayer.id, ..._camLayers];
-    }
-
-    const gsAsset = new pc.Asset('gs_env', 'gsplat', { url: 'gs/scene.sog' });
-    app.assets.add(gsAsset);
-    app.assets.load(gsAsset);
-    gsAsset.ready(() => {
-      gsplatEntity = new pc.Entity('gsplat_env');
-      gsplatEntity.addComponent('gsplat', { asset: gsAsset });
-      // Confine GS to the background layer so world geometry is unaffected
-      if (gsplatEntity.gsplat.layers !== undefined) {
-        gsplatEntity.gsplat.layers = [gsLayer.id];
+    app.assets.loadFromUrl(GS_CONFIG.url, 'gsplat', (err, asset) => {
+      if (err || !asset) {
+        showToast('Environment could not load — game still playable');
+        gsplatEntity.destroy(); gsplatEntity = null; return;
       }
-      gsplatEntity.setPosition(0, 0, 0);
-      app.root.addChild(gsplatEntity);
+      gsplatEntity.addComponent('gsplat', { asset });
+      if ('unified' in (gsplatEntity.gsplat || {})) gsplatEntity.gsplat.unified = true;
+      gsplatEntity.setLocalPosition(GS_CONFIG.position.x, GS_CONFIG.position.y, GS_CONFIG.position.z);
+      gsplatEntity.setLocalEulerAngles(GS_CONFIG.rotation.x, GS_CONFIG.rotation.y, GS_CONFIG.rotation.z);
+      gsplatEntity.setLocalScale(GS_CONFIG.scale, GS_CONFIG.scale, GS_CONFIG.scale);
+      gsplatEntity.enabled = true;
+      // Hide placeholder geometry — GS provides the full environment
       if (floorEntity) floorEntity.enabled = false;
+      const ringEnt = stageEntity.findByName('ring');
+      if (ringEnt) ringEnt.enabled = false;
+      const backdropEnt = stageEntity.findByName('wallBackdrop');
+      if (backdropEnt) backdropEnt.enabled = false;
       cameraEntity.camera.clearColor.set(0.04, 0.04, 0.04, 1);
+      // Console helper for tuning: brickxrEnvironment.set({position,rotation,scale})
+      window.brickxrEnvironment = {
+        logTransform() {
+          const p = gsplatEntity.getLocalPosition(), r = gsplatEntity.getLocalEulerAngles(), s = gsplatEntity.getLocalScale();
+          console.log({ position: { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3) },
+                        rotation: { x:+r.x.toFixed(1), y:+r.y.toFixed(1), z:+r.z.toFixed(1) },
+                        scale: +s.x.toFixed(3) });
+        },
+        set({ position, rotation, scale } = {}) {
+          if (position) gsplatEntity.setLocalPosition(position.x, position.y, position.z);
+          if (rotation) gsplatEntity.setLocalEulerAngles(rotation.x, rotation.y, rotation.z);
+          if (scale !== undefined) gsplatEntity.setLocalScale(scale, scale, scale);
+          this.logTransform();
+        }
+      };
+      showToast('Environment loaded');
     });
-    gsAsset.on('error', () => showToast('GS environment failed to load'));
 
     // AR reticle
     arReticleEntity = buildARReticle();
