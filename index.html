@@ -15,23 +15,34 @@
     }
     #uiOverlay h2 { margin:0 0 8px; font-size:18px; font-weight:700; color:#B87C4C; }
     #scoreDisplay,#moveDisplay,#timeDisplay { font-size:14px; margin:4px 0; opacity:.95; }
+    #helpToggle {
+      position:absolute; bottom:14px; left:14px; z-index:1001;
+      width:40px; height:40px; border-radius:50%; border:none; cursor:pointer;
+      background:#B87C4C; color:#F7F4EA; font-size:18px; font-weight:700;
+      box-shadow:0 4px 12px rgba(0,0,0,.22); transition:transform .1s ease,background .15s ease;
+      display:flex; align-items:center; justify-content:center; line-height:1;
+      -webkit-tap-highlight-color:transparent;
+    }
+    #helpToggle:active { transform:scale(0.93); }
     #helpOverlay {
-      position:absolute; bottom:12px; left:12px; z-index:1000;
-      background:rgba(235,217,209,.88); border:1px solid rgba(184,124,76,.35);
-      backdrop-filter:blur(6px); padding:10px 12px 12px; border-radius:12px; max-width:520px; font-size:13px;
+      position:absolute; bottom:64px; left:14px; z-index:1000;
+      background:rgba(235,217,209,.95); border:1px solid rgba(184,124,76,.35);
+      backdrop-filter:blur(8px); padding:12px 14px 14px; border-radius:14px;
+      max-width:320px; font-size:13px; line-height:1.5;
+      opacity:0; pointer-events:none;
+      transform:translateY(8px) scale(0.97);
+      transform-origin:bottom left;
+      transition:opacity .18s ease, transform .18s ease;
     }
-    #helpOverlay .closeHelp {
-      position:absolute; top:6px; right:8px; border:none; border-radius:8px;
-      padding:4px 8px; cursor:pointer; background:#B87C4C; color:#F7F4EA; font-size:12px;
-    }
-    #vrButton,#arButton,#resetButton,#helpButton,#lookToggle {
+    #helpOverlay.open { opacity:1; pointer-events:auto; transform:translateY(0) scale(1); }
+    #vrButton,#arButton,#resetButton,#lookToggle {
       position:absolute; right:20px; padding:10px 18px; border:none; border-radius:10px;
       font-size:14px; cursor:pointer; color:#F7F4EA; background:#B87C4C;
       box-shadow:0 6px 16px rgba(0,0,0,.15); transition:transform .08s ease,opacity .15s ease;
     }
-    #vrButton:hover,#arButton:hover,#resetButton:hover,#helpButton:hover,#lookToggle:hover { transform:translateY(-1px); opacity:.95; }
+    #vrButton:hover,#arButton:hover,#resetButton:hover,#lookToggle:hover { transform:translateY(-1px); opacity:.95; }
     #vrButton { bottom:20px; } #arButton { bottom:66px; } #resetButton { bottom:112px; }
-    #helpButton { bottom:158px; } #lookToggle { bottom:204px; display:none; }
+    #lookToggle { bottom:158px; display:none; }
     #status {
       position:absolute; top:12px; right:12px; z-index:1000;
       background:rgba(247,244,234,.85); border:1px solid rgba(184,124,76,.35);
@@ -77,20 +88,19 @@
     <div id="timeDisplay">Time: 0s</div>
   </div>
 
-  <div id="helpOverlay">
-    <button class="closeHelp" id="closeHelpBtn">Close</button>
+  <button id="helpToggle" aria-label="Help" aria-expanded="false">?</button>
+  <div id="helpOverlay" role="tooltip">
     <strong>Goal:</strong> stack all bricks into the glowing slots<br>
     <strong>Note:</strong> finish each row to unlock the next<br>
     <strong>VR:</strong> point and squeeze trigger to grab, release to snap<br>
     <strong>Desktop:</strong> left-drag moves bricks · right-drag orbits · scroll zooms<br>
-    <strong>Mobile:</strong> one finger moves bricks; tap Look to switch to orbit<br>
-    <strong>AR:</strong> tap the floor to place the wall, then use AR Controls to adjust
+    <strong>Mobile:</strong> one finger moves bricks; two fingers pinch/rotate in AR<br>
+    <strong>AR:</strong> tap the floor to place the wall; pinch to scale, twist to rotate
   </div>
 
   <button id="vrButton">Enter VR</button>
   <button id="arButton">Enter AR</button>
   <button id="resetButton">New Game</button>
-  <button id="helpButton">Help</button>
   <button id="lookToggle" aria-pressed="false">Look: Off</button>
 
   <div id="status"></div>
@@ -884,13 +894,23 @@
        UI BUTTONS
        ================================================================ */
     document.getElementById('resetButton').addEventListener('click', resetGame);
-    document.getElementById('helpButton').addEventListener('click', () => {
+    document.getElementById('helpToggle').addEventListener('click', () => {
       const h = document.getElementById('helpOverlay');
-      h.style.display = h.style.display === 'none' ? 'block' : 'none';
+      const btn = document.getElementById('helpToggle');
+      const open = h.classList.toggle('open');
+      btn.setAttribute('aria-expanded', String(open));
+      btn.textContent = open ? '✕' : '?';
     });
-    document.getElementById('closeHelpBtn').addEventListener('click', () => {
-      document.getElementById('helpOverlay').style.display = 'none';
-    });
+    // Close help when tapping elsewhere
+    document.addEventListener('pointerdown', ev => {
+      const h = document.getElementById('helpOverlay');
+      const btn = document.getElementById('helpToggle');
+      if (h.classList.contains('open') && !h.contains(ev.target) && ev.target !== btn) {
+        h.classList.remove('open');
+        btn.setAttribute('aria-expanded', 'false');
+        btn.textContent = '?';
+      }
+    }, { capture: true });
 
     if (isMobile) {
       const lt = document.getElementById('lookToggle'); lt.style.display = 'block';
