@@ -1,0 +1,1538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!--
+    WebXR Brick Stacker, VR and AR support
+    Heavily commented so you can follow each section
+    Palette: #A8BBA3, #F7F4EA, #EBD9D1, #B87C4C
+  -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>WebXR Brick Building Game</title>
+
+  <!-- Three.js core and helpers, pinned near r128 for consistency with examples -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+
+  <style>
+    /* Page base, warm paper background for desktop */
+    body {
+      margin: 0;
+      background: #F7F4EA;
+      color: #1B1A17;
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+      touch-action: none;
+    }
+
+    /* HUD panel with score, moves, time */
+    #uiOverlay {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 1000;
+      background: rgba(247, 244, 234, 0.80);
+      border: 1px solid rgba(184, 124, 76, 0.35);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      padding: 12px 14px;
+      border-radius: 12px;
+      max-width: 320px;
+      line-height: 1.3;
+    }
+    #uiOverlay h2 { margin: 0 0 8px; font-size: 18px; font-weight: 700; letter-spacing: .2px; color: #B87C4C; }
+    #scoreDisplay, #moveDisplay, #timeDisplay { font-size: 14px; color: #1B1A17; margin: 4px 0; opacity: .95; }
+
+    /* Help panel with user controls, includes close button */
+    #helpOverlay {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      z-index: 1000;
+      background: rgba(235, 217, 209, 0.85);
+      border: 1px solid rgba(184, 124, 76, 0.35);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      padding: 10px 12px 12px;
+      border-radius: 12px;
+      max-width: 520px;
+      font-size: 13px;
+      color: #1B1A17;
+    }
+    #helpOverlay .closeHelp {
+      position: absolute; top: 6px; right: 8px;
+      border: none; border-radius: 8px; padding: 4px 8px; cursor: pointer;
+      background: #B87C4C; color: #F7F4EA; font-size: 12px;
+    }
+    #helpOverlay .closeHelp:hover { opacity: .9; transform: translateY(-1px); }
+
+    /* Action buttons, VR, AR, Reset, Help, Mobile look toggle */
+    #vrButton, #arButton, #resetButton, #helpButton, #lookToggle {
+      position: absolute; right: 20px;
+      padding: 10px 18px; border: none; border-radius: 10px; font-size: 14px; cursor: pointer;
+      color: #F7F4EA; background: #B87C4C; box-shadow: 0 6px 16px rgba(0,0,0,.15);
+      transition: transform .08s ease, opacity .15s ease;
+    }
+    #vrButton:hover, #arButton:hover, #resetButton:hover, #helpButton:hover, #lookToggle:hover { transform: translateY(-1px); opacity: .95; }
+    #vrButton { bottom: 20px; }
+    #arButton { bottom: 66px; }
+    #resetButton { bottom: 112px; }
+    #helpButton { bottom: 158px; }
+    #lookToggle { bottom: 204px; display: none; }
+
+    /* Progress bar at top right, shows bricks placed out of total */
+    #status {
+      position: absolute; top: 12px; right: 12px; z-index: 1000;
+      background: rgba(247, 244, 234, 0.80);
+      border: 1px solid rgba(184, 124, 76, 0.35);
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      padding: 10px 12px; border-radius: 12px; font-size: 13px; color: #1B1A17; min-width: 180px; text-align: right;
+    }
+    #status .progress { display: flex; flex-direction: column; gap: 6px; min-width: 180px; }
+    #status .progress__label { font-size: 12px; letter-spacing: .2px; color: #1B1A17; opacity: .95; text-align: right; }
+    #status .progress__track { position: relative; height: 8px; border-radius: 999px; background: rgba(168,187,163,.25); overflow: hidden; }
+    #status .progress__bar { height: 100%; width: 0%; background: linear-gradient(90deg, #A8BBA3, #B87C4C); border-radius: 999px; transition: width 180ms ease; }
+
+    /* Toast popups for short messages */
+    .toast {
+      position: absolute; left: 50%; top: 72px; transform: translateX(-50%); z-index: 1000;
+      background: rgba(235, 217, 209, .92); border: 1px solid rgba(184, 124, 76, .35);
+      padding: 12px 16px; border-radius: 12px; max-width: 320px; font-size: 14px; color: #1B1A17;
+    }
+
+    /* Small badge that tells which VR system we detected */
+    #vrInfo {
+      position: absolute; top: 50%; left: 12px; z-index: 1000;
+      background: rgba(247, 244, 234, 0.90);
+      border: 1px solid rgba(184, 124, 76, 0.35);
+      padding: 8px 12px; border-radius: 8px;
+      font-size: 12px; color: #1B1A17; opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    #vrInfo.show { opacity: 1; }
+
+    /* AR hint shown when immersive AR is not supported, or as guidance */
+    #arHint {
+      position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+      background: rgba(47,47,47,.8); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 12px;
+      display: none; z-index: 1000;
+    }
+
+    /* AR mobile controls, shown only after stage is placed in AR */
+    #arControls {
+      display: none;
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: rgba(247, 244, 234, 0.88);
+      border: 1px solid rgba(184, 124, 76, 0.35);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border-radius: 16px;
+      padding: 10px 14px;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 340px;
+    }
+    #arControls.visible { display: flex; }
+    #arControls .ar-label {
+      width: 100%;
+      text-align: center;
+      font-size: 11px;
+      color: #B87C4C;
+      letter-spacing: .3px;
+      margin-bottom: 2px;
+    }
+    .ar-ctrl-btn {
+      padding: 10px 15px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      cursor: pointer;
+      color: #F7F4EA;
+      background: #B87C4C;
+      box-shadow: 0 4px 12px rgba(0,0,0,.15);
+      transition: transform .08s ease, opacity .15s ease;
+      min-width: 48px;
+      text-align: center;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .ar-ctrl-btn:active { transform: scale(0.93); opacity: .85; }
+    .ar-ctrl-btn.secondary { background: #A8BBA3; }
+  </style>
+</head>
+<body>
+  <!-- HUD with status numbers -->
+  <div id="uiOverlay">
+    <h2>Brick Stacker</h2>
+    <div id="scoreDisplay"></div>
+    <div id="moveDisplay"></div>
+    <div id="timeDisplay"></div>
+  </div>
+
+  <!-- Help panel, describes controls on desktop, mobile and VR -->
+  <div id="helpOverlay">
+    <button class="closeHelp" id="closeHelpBtn" title="Close">Close</button>
+    <strong>Goal:</strong> stack all bricks into the glowing slots<br>
+    <strong>Note:</strong> only one row of slots is visible at a time, finish a row to unlock the next<br>
+    <strong>VR:</strong> point and squeeze trigger to grab, release to snap<br>
+    <strong>Desktop, move camera:</strong> right drag to orbit, middle drag to pan, scroll to zoom<br>
+    <strong>Desktop, move bricks:</strong> left click and drag to move a brick<br>
+    <strong>Mobile build mode:</strong> one finger moves bricks<br>
+    <strong>Mobile look mode:</strong> tap Look, one finger rotates, two fingers pan or zoom<br>
+    <strong>AR:</strong> tap floor to place wall, then use AR Controls to re-place, rotate (↺ ↻) or scale (− +)<br>
+    <strong>Tip:</strong> the floor circle shows where the grabbed brick sits on the ground
+  </div>
+
+  <!-- Buttons for VR, AR, Reset, Help, plus mobile look toggle -->
+  <button id="vrButton">Enter VR</button>
+  <button id="arButton">Enter AR</button>
+  <button id="resetButton">New Game</button>
+  <button id="helpButton">Help</button>
+  <button id="lookToggle" aria-pressed="false">Look: Off</button>
+
+  <!-- Compact progress element and small info badges -->
+  <div id="status"></div>
+  <div id="vrInfo"></div>
+  <div id="arHint">Point at the floor to place the wall</div>
+
+  <!-- AR mobile controls panel, shown after stage placement -->
+  <div id="arControls">
+    <div class="ar-label">AR Controls</div>
+    <button class="ar-ctrl-btn secondary" id="arReplace">Re-place</button>
+    <button class="ar-ctrl-btn" id="arRotLeft">↺</button>
+    <button class="ar-ctrl-btn" id="arRotRight">↻</button>
+    <button class="ar-ctrl-btn" id="arScaleDown">−</button>
+    <button class="ar-ctrl-btn" id="arScaleUp">+</button>
+  </div>
+
+  <script>
+    /* =========================
+       Dimensions, layout and constants
+       ========================= */
+    const BRICK_W = 0.4, BRICK_H = 0.175, BRICK_D = 0.2;   // size of a full brick
+    const HALF_BRICK_W = BRICK_W / 2;                      // size of a half brick
+    const ROW1_Y = BRICK_H / 2;                            // center height for first row
+    const GAP_Y  = 0.05;                                   // vertical gap between rows
+    const ROWS = 5;                                        // number of rows in the wall
+    const COLS = 8;                                        // full bricks per row
+    const GAP_X = 0.05;                                    // horizontal gap between bricks
+
+    // In non AR mode, wall sits at this Z
+    // In AR mode, the whole stage is anchored in real space, this Z is ignored
+    const WALL_Z = -1.5;
+
+    /* =========================
+       Slot positions, full and half, including stagger
+       ========================= */
+    let BRICK_POSITIONS = [];   // positions for full bricks
+    let HALF_POSITIONS = [];    // positions for half bricks at row ends
+
+    function rebuildBrickPositions() {
+      BRICK_POSITIONS = [];
+      HALF_POSITIONS = [];
+
+      // Center the wall around 0 on X
+      const startX = -((COLS - 1) / 2) * (BRICK_W + GAP_X);
+
+      for (let r = 0; r < ROWS; r++) {
+        const y = ROW1_Y + r * (BRICK_H + GAP_Y);
+
+        // Perfect stagger, offset odd rows by half brick plus gap
+        const offset = (r % 2 === 1) ? ((BRICK_W + GAP_X) / 2) : 0;
+
+        // Full brick slots
+        for (let c = 0; c < COLS; c++) {
+          const x = startX + c * (BRICK_W + GAP_X) + offset;
+          BRICK_POSITIONS.push({ x, y, z: WALL_Z, row: r });
+        }
+
+        // One half brick per row, alternates sides to keep wall rectangular
+        if (r % 2 === 0) {
+          // even row, add half on the right
+          const xLastFull = startX + (COLS - 1) * (BRICK_W + GAP_X) + offset;
+          const xHalfRight = xLastFull + (0.75 * BRICK_W + GAP_X);
+          HALF_POSITIONS.push({ x: xHalfRight, y, z: WALL_Z, row: r, side: 'right' });
+        } else {
+          // odd row, add half on the left
+          const xFirstFull = startX + offset;
+          const xHalfLeft = xFirstFull - (0.75 * BRICK_W + GAP_X);
+          HALF_POSITIONS.push({ x: xHalfLeft, y, z: WALL_Z, row: r, side: 'left' });
+        }
+      }
+    }
+
+    /* =========================
+       Theme colors for drop zones, idle and hover
+       ========================= */
+    const MARKER_NORMAL   = { color: 0xEBD9D1, opacity: 0.35 };
+    const MARKER_HOVER    = { color: 0xB87C4C, opacity: 0.75 };
+    const MARKER_OCCUPIED = { color: 0xA8BBA3, opacity: 0.85 };
+
+    /* =========================
+       Globals, scene, renderer, state
+       ========================= */
+    let scene, camera, renderer;
+    let controls = null;                      // OrbitControls for desktop
+    let cubes = [];                           // all brick meshes
+    let controllers = [];                     // WebXR controllers
+    let selectedCube = null;                  // brick currently grabbed
+    let gridMarkers = [];                     // all drop zone markers
+    let hoverValidIndex = null;               // closest eligible marker
+    let isMobile = false, mobileLookMode = false;
+
+    // Floor indicator ring that follows the grabbed brick
+    let floorIndicator = null;
+    // Floor mesh, visible in desktop and VR, hidden in AR
+    let floorMesh = null;
+
+    // Interactables that can be clicked with ray, includes exit sign
+    const INTERACTABLES = [];
+
+    // Progress counters
+    let score = 0, gamesPlayed = 0, startTime = 0, moves = 0, bricksPlaced = 0, currentBrickNumber = 1;
+    let TOTAL_BRICKS = ROWS * COLS;
+    let activeRow = 0;
+
+    // VR detection badge
+    let vrSystem = 'unknown';
+    const vrInfo = document.getElementById('vrInfo');
+
+    // AR state, hit test setup
+    let isAR = false;
+    let xrHitSource = null;
+    let xrViewerSpace = null;
+    let xrLocalSpace = null;
+    let arReticle = null;
+    const arHint = document.getElementById('arHint');
+
+    // Stage root, everything gameplay related is parented here
+    // In AR, we move this group to the real world anchor
+    const stageGroup = new THREE.Group();
+
+    /* =========================
+       Progress UI helpers
+       ========================= */
+    function renderStatusUI() {
+      const s = document.getElementById('status');
+      s.innerHTML = `
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${TOTAL_BRICKS}" aria-valuenow="0" aria-label="Wall progress">
+          <div class="progress__label">0 / ${TOTAL_BRICKS} bricks</div>
+          <div class="progress__track"><div class="progress__bar" style="width:0%"></div></div>
+        </div>
+      `;
+    }
+    function updateProgress() {
+      const now = Math.min(TOTAL_BRICKS, Math.max(0, bricksPlaced));
+      const pct = (now / TOTAL_BRICKS) * 100;
+      const statusEl = document.getElementById('status');
+      const bar = statusEl.querySelector('.progress__bar');
+      const label = statusEl.querySelector('.progress__label');
+      if (bar) bar.style.width = pct + '%';
+      if (label) label.textContent = `${now} / ${TOTAL_BRICKS} bricks`;
+      const pr = statusEl.querySelector('.progress');
+      if (pr) pr.setAttribute('aria-valuenow', String(now));
+    }
+
+    /* =========================
+       VR system detection
+       ========================= */
+    function detectVRSystem(session) {
+      const ua = navigator.userAgent.toLowerCase();
+      const inputs = session ? Array.from(session.inputSources) : [];
+      if (ua.includes('oculus') || ua.includes('quest')) vrSystem = 'oculus';
+      else if (inputs.some(s => Array.isArray(s.profiles) && s.profiles.includes('pico'))) vrSystem = 'pico';
+      else if (inputs.length) vrSystem = 'generic';
+      else vrSystem = 'unknown';
+      if (vrSystem !== 'unknown') {
+        vrInfo.textContent = `VR System: ${vrSystem}`;
+        vrInfo.classList.add('show');
+        setTimeout(() => vrInfo.classList.remove('show'), 2500);
+      }
+    }
+
+    /* =========================
+       Scene setup, camera, lights, floor, markers, bricks, input
+       ========================= */
+    function init() {
+      isMobile = /Mobi|Android/i.test(navigator.userAgent);
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x87CEEB); // sky blue, AR will switch this to transparent
+
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
+      camera.position.set(0, 1, 1.8);
+
+      // Renderer, alpha true gives transparent canvas in AR
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.xr.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      // Desktop camera controls, left mouse reserved for brick dragging
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.rotateSpeed = 0.9;
+      controls.zoomSpeed = 1.0;
+      controls.panSpeed = 0.8;
+      controls.enableKeys = false;
+      controls.screenSpacePanning = true;
+      controls.mouseButtons = { LEFT: null, RIGHT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN };
+      controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+      const wallCenterY = ROW1_Y + (ROWS - 1) * (BRICK_H + GAP_Y) * 0.5;
+      controls.target.set(0, wallCenterY, WALL_Z);
+      controls.minDistance = 0.8;
+      controls.maxDistance = 6;
+      controls.update();
+
+      // Mobile look toggle
+      if (isMobile) {
+        controls.enabled = false;
+        const lookBtn = document.getElementById('lookToggle');
+        lookBtn.style.display = 'block';
+        lookBtn.addEventListener('click', () => {
+          mobileLookMode = !mobileLookMode;
+          controls.enabled = mobileLookMode;
+          lookBtn.textContent = mobileLookMode ? 'Look: On' : 'Look: Off';
+          lookBtn.setAttribute('aria-pressed', mobileLookMode ? 'true' : 'false');
+          showToast(mobileLookMode ? 'Look mode on' : 'Build mode on');
+        });
+      }
+
+      // XR session state events
+      if (renderer && renderer.xr) {
+        renderer.xr.addEventListener('sessionstart', () => {
+          if (controls) controls.enabled = false;
+          detectVRSystem(renderer.xr.getSession());
+          // Hide synthetic floor in AR, show in VR
+          if (isAR && floorMesh) floorMesh.visible = false;
+          else if (floorMesh) floorMesh.visible = true;
+          showToast(isAR ? 'AR mode active' : 'VR mode active');
+        });
+        renderer.xr.addEventListener('sessionend', () => {
+          if (controls && !isMobile) controls.enabled = true;
+          vrSystem = 'unknown';
+          isAR = false;
+          // Restore sky and canvas opacity, show floor again
+          scene.background = new THREE.Color(0x87CEEB);
+          renderer.setClearAlpha(1.0);
+          renderer.domElement.style.background = '';
+          if (floorMesh) floorMesh.visible = true;
+          document.getElementById('arControls').classList.remove('visible');
+          showToast('XR session ended');
+        });
+      }
+
+      // Lighting
+      const hemiLight = new THREE.HemisphereLight(0xF7F4EA, 0xA8BBA3, 0.6);
+      scene.add(hemiLight);
+
+      const dirLight = new THREE.DirectionalLight(0xFFFFFF, 0.9);
+      dirLight.position.set(2, 3, 1.5);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 1024;
+      dirLight.shadow.mapSize.height = 1024;
+      dirLight.shadow.camera.near = 0.5;
+      dirLight.shadow.camera.far = 10;
+      dirLight.shadow.bias = -0.0005;
+      scene.add(dirLight);
+
+      // Floor, visible in desktop or VR, hidden automatically in AR
+      const floorGeo = new THREE.PlaneGeometry(20, 20);
+      const floorMat = new THREE.MeshStandardMaterial({ color: 0xF7F4EA, roughness: 0.95, metalness: 0.0 });
+      floorMesh = new THREE.Mesh(floorGeo, floorMat);
+      floorMesh.rotation.x = -Math.PI / 2;
+      floorMesh.position.y = -0.5;
+      floorMesh.receiveShadow = true;
+      stageGroup.add(floorMesh);
+
+      // Parent the stage to the scene for AR anchoring
+      scene.add(stageGroup);
+
+      // Ground indicator ring that follows the grabbed brick
+      createFloorIndicator();
+
+      // Build the wall markers, show only the active row
+      rebuildBrickPositions();
+      TOTAL_BRICKS = ROWS * COLS + HALF_POSITIONS.length;
+      createGridMarkers();
+      activeRow = 0;
+      setRowVisibility(activeRow);
+
+      // Helper visuals
+      createMovementBoundaries();
+      createVRInstructions();
+
+      // Exit sign object or fallback plane
+      loadExitSign();
+
+      // Spawn first brick and initialize counters
+      createCubes();
+
+      // Input, VR controllers and desktop pointer, UI buttons
+      setupControllers();
+      setupUIButtons();
+      setupTouchOrPointer();
+
+      // HUD render and updates
+      updateScoreDisplay();
+      renderStatusUI();
+      updateProgress();
+
+      // Help panel toggle wiring
+      const closeHelpBtn = document.getElementById('closeHelpBtn');
+      const helpOverlay = document.getElementById('helpOverlay');
+      closeHelpBtn.addEventListener('click', () => helpOverlay.style.display = 'none');
+      document.getElementById('helpButton').addEventListener('click', () => {
+        const visible = helpOverlay.style.display !== 'none';
+        helpOverlay.style.display = visible ? 'none' : 'block';
+        if (!visible) showToast('Finish each row to unlock the next.');
+      });
+
+      // Resize handler and render loop
+      window.addEventListener('resize', onWindowResize);
+      renderer.setAnimationLoop(render);
+    }
+
+    /* =========================
+       HUD labels
+       ========================= */
+    function updateScoreDisplay() {
+      document.getElementById('scoreDisplay').textContent = `Score: ${score}`;
+      document.getElementById('moveDisplay').textContent = `Moves: ${moves}`;
+      const t = Math.floor((Date.now() - startTime) / 1000);
+      document.getElementById('timeDisplay').textContent = `Time: ${t}s`;
+    }
+
+    /* =========================
+       Drop zone marker creation and visibility per row
+       ========================= */
+    function createGridMarkers() {
+      gridMarkers = [];
+
+      // Full brick markers
+      BRICK_POSITIONS.forEach((pos) => {
+        const g = new THREE.PlaneGeometry(BRICK_W, BRICK_D);
+        const m = new THREE.MeshBasicMaterial({ color: MARKER_NORMAL.color, transparent: true, opacity: MARKER_NORMAL.opacity, side: THREE.DoubleSide });
+        const marker = new THREE.Mesh(g, m);
+        marker.rotation.x = -Math.PI / 2;
+        marker.position.set(pos.x, pos.y - (BRICK_H / 2) - 0.01, pos.z);
+        marker.userData = {
+          index: gridMarkers.length,
+          occupied: false,
+          row: pos.row,
+          type: 'full',
+          width: BRICK_W,
+          isHoverLit: false
+        };
+        stageGroup.add(marker);
+        gridMarkers.push(marker);
+      });
+
+      // Half brick markers
+      HALF_POSITIONS.forEach((pos) => {
+        const g = new THREE.PlaneGeometry(HALF_BRICK_W, BRICK_D);
+        const m = new THREE.MeshBasicMaterial({ color: MARKER_NORMAL.color, transparent: true, opacity: MARKER_NORMAL.opacity, side: THREE.DoubleSide });
+        const marker = new THREE.Mesh(g, m);
+        marker.rotation.x = -Math.PI / 2;
+        marker.position.set(pos.x, pos.y - (BRICK_H / 2) - 0.01, pos.z);
+        marker.userData = {
+          index: gridMarkers.length,
+          occupied: false,
+          row: pos.row,
+          type: 'half',
+          width: HALF_BRICK_W,
+          side: pos.side,
+          isHoverLit: false
+        };
+        stageGroup.add(marker);
+        gridMarkers.push(marker);
+      });
+    }
+
+    function setRowVisibility(row) {
+      gridMarkers.forEach((m) => {
+        if (m.userData.occupied) m.visible = false;
+        else m.visible = (m.userData.row === row);
+        if (m.visible) {
+          m.material.color.setHex(MARKER_NORMAL.color);
+          m.material.opacity = MARKER_NORMAL.opacity;
+        }
+      });
+    }
+
+    function isRowComplete(row) {
+      return gridMarkers.filter(m => m.userData.row === row).every(m => m.userData.occupied);
+    }
+
+    function recomputeActiveRow() {
+      let r = 0;
+      while (r < ROWS && isRowComplete(r)) r++;
+      activeRow = Math.min(r, ROWS - 1);
+      setRowVisibility(activeRow);
+    }
+
+    /* =========================
+       Floor helper visuals
+       ========================= */
+    function createMovementBoundaries() {
+      const geo = new THREE.RingGeometry(1.4, 1.42, 64);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x556B6F, transparent: true, opacity: 0.2 });
+      const ring = new THREE.Mesh(geo, mat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = -0.49;
+      stageGroup.add(ring);
+    }
+
+    function createVRInstructions() {
+      const panelGeometry = new THREE.PlaneGeometry(0.6, 0.28);
+      const canvas = document.createElement('canvas');
+      canvas.width = 512; canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#1B1A17'; ctx.fillRect(0, 0, 512, 256);
+      ctx.fillStyle = '#EDE7E0';
+      ctx.font = 'bold 22px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Place bricks on glowing slots', 256, 95);
+      ctx.font = '18px Arial';
+      ctx.fillText('Grab with trigger, release to snap', 256, 150);
+      const tex = new THREE.CanvasTexture(canvas);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+      const mesh = new THREE.Mesh(panelGeometry, mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(0, -0.49, -0.6);
+      stageGroup.add(mesh);
+    }
+
+    /* =========================
+       Exit sign, GLB if available, 2D fallback if not
+       ========================= */
+    let exitSign = null;
+    function loadExitSign() {
+      const loader = new THREE.GLTFLoader();
+      loader.load(
+        'assets/exit_sign.glb',
+        (gltf) => {
+          exitSign = gltf.scene;
+          exitSign.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+          const topY = ROW1_Y + (ROWS - 1) * (BRICK_H + GAP_Y) + BRICK_H * 1.8;
+          exitSign.position.set(0, topY, WALL_Z);
+          exitSign.scale.set(0.8, 0.8, 0.8);
+          exitSign.rotation.y = Math.PI / 2;
+          exitSign.userData.interactable = 'exit';
+          stageGroup.add(exitSign);
+          INTERACTABLES.push(exitSign);
+        },
+        undefined,
+        () => {
+          // Fallback plane sign
+          const p = new THREE.PlaneGeometry(0.6, 0.25);
+          const c = document.createElement('canvas');
+          c.width = 512; c.height = 256;
+          const ctx = c.getContext('2d');
+          ctx.fillStyle = '#1B1A17'; ctx.fillRect(0,0,512,256);
+          ctx.fillStyle = '#E74C3C';
+          ctx.font = 'bold 140px Arial';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('EXIT', 256, 128);
+          const tex = new THREE.CanvasTexture(c);
+          const m = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+          const fallback = new THREE.Mesh(p, m);
+          const topY = ROW1_Y + (ROWS - 1) * (BRICK_H + GAP_Y) + BRICK_H * 1.8;
+          fallback.position.set(0, topY, WALL_Z);
+          fallback.rotation.y = Math.PI / 2;
+          fallback.userData.interactable = 'exit';
+          stageGroup.add(fallback);
+          INTERACTABLES.push(fallback);
+        }
+      );
+    }
+
+    function exitImmersive() {
+      const sess = renderer.xr.getSession && renderer.xr.getSession();
+      if (sess) { sess.end(); showToast('Exiting XR'); return; }
+      if (document.fullscreenElement) { document.exitFullscreen(); showToast('Exiting fullscreen'); }
+    }
+
+    /* =========================
+       Bricks, spawning, clearing, scoring
+       ========================= */
+    function createCubes() {
+      cubes = [];
+      bricksPlaced = 0;
+      currentBrickNumber = 1;
+      moves = 0;
+      startTime = Date.now();
+      spawnNextBrick();
+      updateScoreDisplay();
+      updateProgress();
+    }
+
+    function clearBricksAndMarkers() {
+      if (cubes && cubes.length) {
+        cubes.forEach(b => {
+          if (!b) return;
+          stageGroup.remove(b);
+          if (b.geometry) b.geometry.dispose();
+          if (b.material) {
+            if (Array.isArray(b.material)) b.material.forEach(m => m && m.map && m.map.dispose());
+            else if (b.material.map) b.material.map.dispose();
+          }
+        });
+      }
+      cubes = [];
+      if (gridMarkers && gridMarkers.length) {
+        gridMarkers.forEach(m => {
+          if (!m) return;
+          stageGroup.remove(m);
+          if (m.geometry) m.geometry.dispose();
+          if (m.material) m.material.dispose();
+        });
+      }
+      gridMarkers = [];
+    }
+
+    function resetGame() {
+      hoverValidIndex = null;
+      selectedCube = null;
+      bricksPlaced = 0;
+      currentBrickNumber = 1;
+      moves = 0;
+      startTime = Date.now();
+
+      clearBricksAndMarkers();
+
+      rebuildBrickPositions();
+      TOTAL_BRICKS = ROWS * COLS + HALF_POSITIONS.length;
+      createGridMarkers();
+      activeRow = 0;
+      setRowVisibility(activeRow);
+
+      spawnNextBrick();
+      updateScoreDisplay();
+      renderStatusUI();
+      updateProgress();
+      showToast('New game');
+    }
+
+    // Outline glow attached to a brick, subtle feedback
+    function addBrickGlow(brick) {
+      const glowGeom = brick.geometry.clone();
+      const glowMat = new THREE.MeshBasicMaterial({ color: 0x7A8F6A, transparent: true, opacity: 0.0, depthWrite: false });
+      const glow = new THREE.Mesh(glowGeom, glowMat);
+      glow.scale.set(1.06, 1.06, 1.06);
+      glow.renderOrder = 999;
+      brick.add(glow);
+      brick.userData.glow = glow;
+    }
+    function setBrickGlow(brick, active) {
+      if (!brick || !brick.userData) return;
+      const glow = brick.userData.glow;
+      if (!glow) return;
+      const target = active ? 0.85 : 0.0;
+      glow.material.opacity = glow.material.opacity + (target - glow.material.opacity) * 0.25;
+      glow.visible = glow.material.opacity > 0.02;
+    }
+
+    // Floor indicator ring that follows a grabbed brick
+    function createFloorIndicator() {
+      const geo = new THREE.RingGeometry(0.9, 1.0, 48);
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xB87C4C, transparent: true, opacity: 0.6,
+        side: THREE.DoubleSide, depthWrite: false, depthTest: false
+      });
+      floorIndicator = new THREE.Mesh(geo, mat);
+      floorIndicator.rotation.x = -Math.PI / 2;
+      floorIndicator.position.y = -0.499;
+      floorIndicator.visible = false;
+      stageGroup.add(floorIndicator);
+    }
+    function updateFloorIndicatorForBrick(brick) {
+      if (!floorIndicator || !brick || !brick.geometry || !brick.geometry.parameters) return;
+      const gp = brick.geometry.parameters;
+      const w = gp.width  || BRICK_W;
+      const d = gp.depth  || BRICK_D;
+      const r = Math.max(w, d) * 0.75;
+      floorIndicator.position.x = brick.position.x;
+      floorIndicator.position.z = brick.position.z;
+      floorIndicator.scale.set(r, r, 1);
+      floorIndicator.visible = true;
+    }
+    function hideFloorIndicator() { if (floorIndicator) floorIndicator.visible = false; }
+
+    /* =========================
+       Hover height helper, prevents intersecting lower rows, lifts earlier
+       ========================= */
+    const FLOOR_TOP = -0.5; // desktop floor Y level
+    function getNoOverlapHoverY(x, z) {
+      let minCenterY = FLOOR_TOP + (BRICK_H / 2);
+      const CLEAR = 0.08;     // extra vertical clearance
+      const PROX_PAD = 0.12;  // makes lift happen a bit earlier
+      for (const b of cubes) {
+        if (!b.userData.isPlaced) continue;
+        const params = b.geometry && b.geometry.parameters ? b.geometry.parameters : { width: BRICK_W, depth: BRICK_D };
+        const halfW = (params.width || BRICK_W) / 2 + PROX_PAD;
+        const halfD = (params.depth || BRICK_D) / 2 + PROX_PAD;
+        const overlapsX = Math.abs(x - b.position.x) <= halfW;
+        const overlapsZ = Math.abs(z - b.position.z) <= halfD;
+        if (overlapsX && overlapsZ) {
+          const topY = b.position.y + (BRICK_H / 2);
+          const required = topY + CLEAR + (BRICK_H / 2);
+          if (required > minCenterY) minCenterY = required;
+        }
+      }
+      if (minCenterY < ROW1_Y) minCenterY = ROW1_Y;
+      return minCenterY;
+    }
+
+    /* =========================
+       Spawn helpers, avoid spawning on top of other loose bricks
+       ========================= */
+    function aabbOverlap2D(ax, az, aw, ad, bx, bz, bw, bd) {
+      const halfAw = aw * 0.5, halfAd = ad * 0.5;
+      const halfBw = bw * 0.5, halfBd = bd * 0.5;
+      const dx = Math.abs(ax - bx), dz = Math.abs(az - bz);
+      return (dx < (halfAw + halfBw)) && (dz < (halfAd + halfBd));
+    }
+    function isOccupiedAt(x, z, w, d) {
+      for (const b of cubes) {
+        const p = b.position;
+        const gp = b.geometry && b.geometry.parameters;
+        const bw = gp && gp.width  ? gp.width  : BRICK_W;
+        const bd = gp && gp.depth  ? gp.depth  : BRICK_D;
+        if (aabbOverlap2D(x, z, w, d, p.x, p.z, bw, bd)) return true;
+      }
+      return false;
+    }
+    function findFreeSpawnXZ(startX, startZ, w, d) {
+      if (!isOccupiedAt(startX, startZ, w, d)) return { x: startX, z: startZ };
+      const MAX_STEPS = 24;
+      const STEP_X = w * 0.65;
+      const STEP_Z = d * 0.65 * 0.5;
+      for (let i = 1; i <= MAX_STEPS; i++) {
+        const dir = (i % 2 === 0) ? -1 : 1;
+        const nx = startX + dir * STEP_X * i;
+        const nz = startZ + ((i % 3) - 1) * STEP_Z;
+        if (!isOccupiedAt(nx, nz, w, d)) return { x: nx, z: nz };
+      }
+      return { x: startX - STEP_X * (MAX_STEPS + 2), z: startZ };
+    }
+
+    /* =========================
+       Brick spawning logic, alternates full and half based on open slots
+       ========================= */
+    function spawnNextBrick() {
+      const remaining = gridMarkers.some(m => !m.userData.occupied);
+      if (!remaining) return;
+
+      const row = activeRow;
+      const rowUnfilledFull = gridMarkers.some(m => !m.userData.occupied && m.userData.row === row && m.userData.type === 'full');
+      const rowUnfilledHalf = gridMarkers.some(m => !m.userData.occupied && m.userData.row === row && m.userData.type === 'half');
+
+      let spawnType = 'full';
+      if (!rowUnfilledFull && rowUnfilledHalf) spawnType = 'half';
+      if (!rowUnfilledFull && !rowUnfilledHalf) {
+        const anyHalfLeft = gridMarkers.some(m => !m.userData.occupied && m.userData.type === 'half');
+        spawnType = anyHalfLeft ? 'half' : 'full';
+      }
+
+      // Earthy color cycle
+      const colors = [0xA8BBA3, 0xB87C4C, 0xF7F4EA, 0xEBD9D1, 0x9DB29A, 0xA06E45];
+      const color = colors[(currentBrickNumber - 1) % colors.length];
+
+      const width = (spawnType === 'half') ? HALF_BRICK_W : BRICK_W;
+      const depth = BRICK_D;
+
+      const material = new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0.0 });
+      const brick = new THREE.Mesh(new THREE.BoxGeometry(width, BRICK_H, depth), material);
+      addBrickGlow(brick);
+
+      // Spawn on user's right side near camera, avoid collisions with other loose bricks
+      const jitterX = (Math.random() - 0.5) * 0.1;
+      const jitterZ = (Math.random() - 0.5) * 0.1;
+      const baseX  = +1.2 + jitterX;
+      const baseZ  = WALL_Z + 0.9 + jitterZ;
+      const free = findFreeSpawnXZ(baseX, baseZ, width, depth);
+
+      brick.position.set(free.x, ROW1_Y, free.z);
+      brick.castShadow = true;
+      brick.receiveShadow = true;
+      brick.userData.number = currentBrickNumber;
+      brick.userData.isPlaced = false;
+      brick.userData.slotIndex = null;
+
+      stageGroup.add(brick);
+      cubes.push(brick);
+    }
+
+    function releaseFromSlot(brick) {
+      // When grabbing a snapped brick, free its marker so progress stays accurate
+      if (!brick || !brick.userData) return;
+      if (brick.userData.isPlaced && brick.userData.slotIndex != null) {
+        const idx = brick.userData.slotIndex;
+        const marker = gridMarkers[idx];
+        if (marker) {
+          marker.userData.occupied = false;
+          marker.visible = (marker.userData.row === activeRow);
+          marker.material.color.setHex(MARKER_NORMAL.color);
+          marker.material.opacity = MARKER_NORMAL.opacity;
+        }
+        brick.userData.isPlaced = false;
+        brick.userData.slotIndex = null;
+        if (bricksPlaced > 0) {
+          bricksPlaced--;
+          updateProgress();
+          recomputeActiveRow();
+        }
+      }
+    }
+
+    /* =========================
+       Desktop pointer interactions
+       ========================= */
+    let mouse = new THREE.Vector2();
+    let raycaster = new THREE.Raycaster();
+
+    // In AR the stage is anchored at stageGroup.position.y; use that as ground Y.
+    function getGroundPlaneY() {
+      return isAR ? stageGroup.position.y : 0;
+    }
+    let activePointerId = null; // track which finger/mouse is dragging a brick on mobile
+
+    function setupTouchOrPointer() {
+      window.addEventListener('pointerdown', onPointerDown, { passive: false });
+      window.addEventListener('pointermove', onPointerMove, { passive: false });
+      window.addEventListener('pointerup', onPointerUp, { passive: false });
+    }
+
+    function onPointerDown(event) {
+      if (isMobile && mobileLookMode) return;
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+      // Only allow one active drag at a time
+      if (activePointerId !== null) return;
+      activePointerId = event.pointerId;
+
+      event.preventDefault();
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+
+      // Check exit sign first
+      const hitExit = raycaster.intersectObjects(INTERACTABLES, true);
+      if (hitExit.length) {
+        const obj = hitExit[0].object;
+        let cur = obj;
+        while (cur && !cur.userData.interactable) cur = cur.parent;
+        if (cur && cur.userData.interactable === 'exit') {
+          // clear pointer tracking since we will not start a drag
+          activePointerId = null;
+          exitImmersive();
+          return;
+        }
+      }
+
+      // Then bricks: select only non-placed (loose) bricks
+      const intersects = raycaster.intersectObjects(cubes, false);
+      if (intersects.length > 0) {
+        const hit = intersects.find(i => !i.object.userData.isPlaced);
+        if (hit) {
+          selectedCube = hit.object;
+          selectedCube.userData.isGrabbed = true;
+          // Compute drag offset so the brick doesn't jump when starting drag
+          const planeY = getGroundPlaneY();
+          const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
+          const intersection = new THREE.Vector3();
+          raycaster.ray.intersectPlane(plane, intersection);
+          const offX = (isFinite(intersection.x) ? (selectedCube.position.x - intersection.x) : 0);
+          const offZ = (isFinite(intersection.z) ? (selectedCube.position.z - intersection.z) : 0);
+          selectedCube.userData.grabOffset = { x: offX, z: offZ };
+          // If by any chance the brick was snapped, free it (defensive)
+          releaseFromSlot(selectedCube);
+          updateFloorIndicatorForBrick(selectedCube);
+          if (navigator.vibrate) navigator.vibrate(15);
+        } else {
+          // Nothing eligible to drag under the finger
+          activePointerId = null;
+        }
+      } else {
+        // No object under the finger
+        activePointerId = null;
+      }
+    }
+
+    function onPointerMove(event) {
+      if (isMobile && mobileLookMode) return;
+      if (activePointerId === null || event.pointerId !== activePointerId) return;
+      if (!selectedCube) return;
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      updateCubePosition();
+    }
+
+    function updateCubePosition() {
+      if (!selectedCube) return;
+
+      raycaster.setFromCamera(mouse, camera);
+
+      // Use dynamic ground plane: AR uses the stage's anchored Y
+      const planeY = getGroundPlaneY();
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
+
+      const intersection = new THREE.Vector3();
+      raycaster.ray.intersectPlane(plane, intersection);
+
+      if (intersection) {
+        const off = (selectedCube.userData && selectedCube.userData.grabOffset) ? selectedCube.userData.grabOffset : { x: 0, z: 0 };
+        const nextX = intersection.x + off.x;
+        const nextZ = intersection.z + off.z;
+
+        selectedCube.position.x = nextX;
+        selectedCube.position.z = nextZ;
+
+        const minCenterY = getNoOverlapHoverY(nextX, nextZ);
+        // Keep brick at least on the current plane height
+        const desiredY = Math.max(minCenterY, planeY + (BRICK_H * 0.5));
+        selectedCube.position.y = desiredY;
+
+        highlightNearbyPositions(nextX, nextZ);
+        setBrickGlow(selectedCube, hoverValidIndex !== null);
+        updateFloorIndicatorForBrick(selectedCube);
+      }
+    }
+
+    function onPointerUp(event) {
+      if (activePointerId === null || event.pointerId !== activePointerId) return;
+      activePointerId = null;
+
+      if (selectedCube) {
+        selectedCube.userData.isGrabbed = false;
+        moves++;
+        updateScoreDisplay();
+        const snapped = snapToBrickPosition(selectedCube);
+        if (snapped && navigator.vibrate) navigator.vibrate(60);
+        hideFloorIndicator();
+        if (selectedCube.userData) delete selectedCube.userData.grabOffset;
+        selectedCube = null;
+        checkWinCondition();
+      }
+    }
+
+    /* =========================
+       Toast helper
+       ========================= */
+    function showToast(text, ms = 2000) {
+      const t = document.createElement('div');
+      t.className = 'toast';
+      t.textContent = text;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), ms);
+    }
+
+    /* =========================
+       Marker highlight and idle pulse
+       ========================= */
+    function highlightNearbyPositions(x, z) {
+      const threshold = 0.35;
+      let best = { d: Infinity, m: null };
+
+      gridMarkers.forEach(m => {
+        if (!m.visible) { m.userData.isHoverLit = false; return; }
+
+        if (m.userData.occupied) {
+          m.material.color.setHex(MARKER_OCCUPIED.color);
+          m.material.opacity = MARKER_OCCUPIED.opacity;
+          m.userData.isHoverLit = false;
+          return;
+        }
+
+        const dx = x - m.position.x;
+        const dz = z - m.position.z;
+        const d  = Math.hypot(dx, dz);
+
+        if (d < threshold) {
+          m.material.color.setHex(MARKER_HOVER.color);
+          m.material.opacity = MARKER_HOVER.opacity;
+          m.userData.isHoverLit = true;
+          if (d < best.d) best = { d, m };
+        } else {
+          m.userData.isHoverLit = false;
+        }
+      });
+
+      if (best.m) {
+        best.m.material.opacity = Math.min(0.9, MARKER_HOVER.opacity + 0.15);
+        hoverValidIndex = best.m.userData.index;
+      } else {
+        hoverValidIndex = null;
+      }
+    }
+
+    const _pulseBlue = new THREE.Color(0x66aaff);
+    const _pulseBase = new THREE.Color(MARKER_NORMAL.color);
+    function pulseMarkers(timeSeconds) {
+      const s = timeSeconds;
+      const wave = 0.5 + 0.5 * Math.sin(s * 2.2);
+      const tint = 0.15 + 0.25 * wave;
+      const opa  = MARKER_NORMAL.opacity + 0.08 * Math.sin(s * 2.2);
+
+      gridMarkers.forEach(m => {
+        if (!m.visible) return;
+        if (m.userData.occupied) return;
+        if (m.userData.isHoverLit) return;
+
+        const c = m.material.color;
+        c.copy(_pulseBase).lerp(_pulseBlue, tint);
+        m.material.opacity = Math.max(0.15, Math.min(0.75, opa));
+      });
+    }
+
+    /* =========================
+       Snap logic, row progression and win scoring
+       ========================= */
+    function snapToBrickPosition(brick) {
+      let bestMarker = null;
+      let minDistance = Infinity;
+      const SNAP_RADIUS = 0.35;
+      const isHalfBrick = (brick.geometry && brick.geometry.parameters && brick.geometry.parameters.width === HALF_BRICK_W);
+
+      gridMarkers.forEach((m) => {
+        if (!m.visible || m.userData.occupied) return;
+        if (isHalfBrick && m.userData.type !== 'half') return;
+        if (!isHalfBrick && m.userData.type !== 'full') return;
+        const distance = Math.hypot(brick.position.x - m.position.x, brick.position.z - m.position.z);
+        if (distance < SNAP_RADIUS && distance < minDistance) {
+          minDistance = distance;
+          bestMarker = m;
+        }
+      });
+
+      if (bestMarker) {
+        const rowY = ROW1_Y + bestMarker.userData.row * (BRICK_H + GAP_Y);
+        brick.position.set(bestMarker.position.x, rowY, bestMarker.position.z);
+        brick.userData.isPlaced = true;
+        brick.userData.slotIndex = bestMarker.userData.index;
+
+        bestMarker.userData.occupied = true;
+        bestMarker.visible = false;
+
+        if (brick.userData && brick.userData.glow) {
+          const glow = brick.userData.glow;
+          brick.remove(glow);
+          if (glow.geometry) glow.geometry.dispose();
+          if (glow.material) glow.material.dispose();
+          brick.userData.glow = null;
+        }
+        hoverValidIndex = null;
+
+        bricksPlaced++;
+        currentBrickNumber++;
+        updateProgress();
+
+        const placedRow = bestMarker.userData.row;
+        if (placedRow === activeRow && isRowComplete(activeRow)) {
+          if (activeRow < ROWS - 1) {
+            activeRow++;
+            setRowVisibility(activeRow);
+            showToast(`Row ${placedRow + 1} complete, next row unlocked`);
+          }
+        }
+
+        if (bricksPlaced < TOTAL_BRICKS) {
+          setTimeout(spawnNextBrick, 800);
+        } else {
+          onAllBricksPlaced();
+        }
+        return true;
+      }
+      return false;
+    }
+
+    function onAllBricksPlaced() {
+      const elapsed = Math.max(1, Math.floor((Date.now() - startTime) / 1000));
+      const timeBonus = Math.max(0, 60 - elapsed);
+      const movesPenalty = Math.max(0, moves - TOTAL_BRICKS) * 8;
+      const gameScore = Math.max(15, 150 + timeBonus - movesPenalty);
+      score += gameScore;
+      gamesPlayed++;
+      showToast(`Nice, wall complete, +${gameScore} points`);
+      updateScoreDisplay();
+      updateProgress();
+    }
+
+    /* =========================
+       VR controller rigs, rays and grabbing logic
+       ========================= */
+    const VR_STATE = {
+      grabbing: false,
+      controller: null,
+      lineColorIdle: 0xEBD9D1,
+      lineColorGrab: 0xB87C4C
+    };
+
+    function makeControllerRig(controller) {
+      // Simple handle to visualize the controller
+      const handle = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.015, 0.02, 0.12, 16),
+        new THREE.MeshStandardMaterial({ color: 0xF7F4EA, roughness: 0.6, metalness: 0.0 })
+      );
+      handle.rotation.x = Math.PI / 2;
+      handle.position.z = -0.03;
+      controller.add(handle);
+
+      // Forward line that shows pointing direction
+      const points = [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)];
+      const geom = new THREE.BufferGeometry().setFromPoints(points);
+      const mat  = new THREE.LineBasicMaterial({ color: VR_STATE.lineColorIdle, transparent: true, opacity: 0.9 });
+      const line = new THREE.Line(geom, mat);
+      line.name = 'pointerLine';
+      line.scale.z = 1.5;
+      controller.add(line);
+
+      // Attach events
+      controller.addEventListener('selectstart', (e) => onVRSelectStart(controller, e));
+      controller.addEventListener('selectend',   (e) => onVRSelectEnd(controller, e));
+      controller.addEventListener('connected',   () => { controller.visible = true; });
+      controller.addEventListener('disconnected',() => { controller.visible = false; });
+
+      controller.visible = false;
+      return { controller, line };
+    }
+
+    const _ctrlRay = new THREE.Ray();
+    const _ctrlRaycaster = new THREE.Raycaster();
+    const _ctrlDir = new THREE.Vector3();
+    const _ctrlPos = new THREE.Vector3();
+    const _tmpMat4 = new THREE.Matrix4();
+
+    function setLineColor(ctrl, color) {
+      const line = ctrl.getObjectByName('pointerLine');
+      if (line && line.material) line.material.color.setHex(color);
+    }
+
+    function getControllerRay(controller) {
+      _tmpMat4.identity().extractRotation(controller.matrixWorld);
+      _ctrlDir.set(0, 0, -1).applyMatrix4(_tmpMat4).normalize();
+      controller.getWorldPosition(_ctrlPos);
+      _ctrlRay.origin.copy(_ctrlPos);
+      _ctrlRay.direction.copy(_ctrlDir);
+      return _ctrlRay;
+    }
+
+    function intersectBricksFromController(controller) {
+      const ray = getControllerRay(controller);
+      _ctrlRaycaster.ray.copy(ray);
+      _ctrlRaycaster.far = 5;
+      return _ctrlRaycaster.intersectObjects(cubes, false);
+    }
+    function intersectInteractablesFromController(controller) {
+      const ray = getControllerRay(controller);
+      _ctrlRaycaster.ray.copy(ray);
+      _ctrlRaycaster.far = 5;
+      return _ctrlRaycaster.intersectObjects(INTERACTABLES, true);
+    }
+
+    // Project controller ray to a ground plane, return suggested Y to avoid overlaps
+    function projectToGround(controller) {
+      // Dynamic ground: AR uses stage anchor Y, otherwise 0
+      const planeY = getGroundPlaneY();
+      const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
+
+      const ray = getControllerRay(controller);
+      const hit = new THREE.Vector3();
+      if (ray.intersectPlane(groundPlane, hit)) {
+        const minCenterY = getNoOverlapHoverY(hit.x, hit.z);
+        const desiredY = Math.max(minCenterY, planeY + (BRICK_H * 0.5));
+        return { x: hit.x, z: hit.z, y: desiredY };
+      }
+      return null;
+    }
+
+    function onVRSelectStart(controller, event) {
+      if (VR_STATE.grabbing) return;
+
+      // Exit sign click check
+      const iHit = intersectInteractablesFromController(controller);
+      if (iHit.length) {
+        let obj = iHit[0].object;
+        while (obj && !obj.userData.interactable) obj = obj.parent;
+        if (obj && obj.userData.interactable === 'exit') { exitImmersive(); return; }
+      }
+
+      // Try to directly hit a NON-PLACED brick first
+      let hits = intersectBricksFromController(controller).filter(h => !h.object.userData.isPlaced);
+      if (hits.length > 0) {
+        selectedCube = hits[0].object;
+      } else {
+        // Fallback, choose the closest NON-PLACED brick near a forward point
+        const ray = getControllerRay(controller);
+        const grabPoint = ray.origin.clone().addScaledVector(ray.direction, 1.2);
+        let best = null, bestDist = 0.35;
+        for (const b of cubes) {
+          if (b.userData.isPlaced) continue;
+          const d = b.position.distanceTo(grabPoint);
+          if (d < bestDist) { best = b; bestDist = d; }
+        }
+        if (!best) {
+          // Final fallback, closest NON-PLACED to the controller itself
+          const ctrlPos = new THREE.Vector3();
+          controller.getWorldPosition(ctrlPos);
+          let bd = 0.3;
+          for (const b of cubes) {
+            if (b.userData.isPlaced) continue;
+            const d = b.position.distanceTo(ctrlPos);
+            if (d < bd) { best = b; bd = d; }
+          }
+        }
+        selectedCube = best || null;
+      }
+
+      if (selectedCube) {
+        selectedCube.userData.isGrabbed = true;
+        // Defensive free (should be loose already)
+        releaseFromSlot(selectedCube);
+        VR_STATE.grabbing = true;
+        VR_STATE.controller = controller;
+        setLineColor(controller, VR_STATE.lineColorGrab);
+        updateFloorIndicatorForBrick(selectedCube);
+        try {
+          if (event.target && event.target.gamepad && event.target.gamepad.hapticActuators) {
+            event.target.gamepad.hapticActuators[0].pulse(0.5, 100);
+          } else if (navigator.vibrate) navigator.vibrate(15);
+        } catch {}
+      }
+    }
+
+    function onVRSelectEnd(controller, event) {
+      if (!VR_STATE.grabbing || VR_STATE.controller !== controller) return;
+      if (selectedCube) {
+        selectedCube.userData.isGrabbed = false;
+        moves++;
+        updateScoreDisplay();
+        const snapped = snapToBrickPosition(selectedCube);
+        if (snapped) {
+          try {
+            if (event.target && event.target.gamepad && event.target.gamepad.hapticActuators) {
+              event.target.gamepad.hapticActuators[0].pulse(0.8, 200);
+            } else if (navigator.vibrate) navigator.vibrate(60);
+          } catch {}
+        }
+        hideFloorIndicator();
+      }
+      selectedCube = null;
+      VR_STATE.grabbing = false;
+      VR_STATE.controller = null;
+      setLineColor(controller, VR_STATE.lineColorIdle);
+      checkWinCondition();
+    }
+
+    function setupControllers() {
+      const controller0 = renderer.xr.getController(0);
+      const controller1 = renderer.xr.getController(1);
+      scene.add(controller0); scene.add(controller1);
+      controllers = [ makeControllerRig(controller0), makeControllerRig(controller1) ];
+      console.log('VR Controllers initialized:', controllers.map(c => c && c.controller ? 'ok' : 'missing'));
+    }
+
+    /* =========================
+       Render loop, includes AR hit test handling
+       ========================= */
+    let stagePlaced = false; // AR placement state
+
+    function render(timestamp, frame) {
+      if (controls) controls.update();
+
+      // While grabbing in VR, move brick by projecting to ground with early lift
+      if (VR_STATE.grabbing && VR_STATE.controller && selectedCube) {
+        const hit = projectToGround(VR_STATE.controller);
+        if (hit) {
+          selectedCube.position.x = hit.x;
+          selectedCube.position.z = hit.z;
+          selectedCube.position.y = hit.y;
+          highlightNearbyPositions(hit.x, hit.z);
+          setBrickGlow(selectedCube, hoverValidIndex !== null);
+          updateFloorIndicatorForBrick(selectedCube);
+        }
+      }
+
+      // Idle pulse on visible markers
+      pulseMarkers(performance.now() * 0.001);
+
+      // Controller line opacity feedback
+      controllers.forEach(rig => {
+        const c = rig.controller, line = c.getObjectByName('pointerLine');
+        if (line && c.visible) line.material.opacity = VR_STATE.grabbing && VR_STATE.controller === c ? 1.0 : 0.7;
+      });
+
+      // AR hit testing, update reticle until the stage is placed
+      if (isAR && frame && xrHitSource && !stagePlaced) {
+        // Using local-floor for consistent world height
+        const hits = frame.getHitTestResults(xrHitSource);
+        if (hits.length > 0) {
+          const hit = hits[0];
+          const pose = hit.getPose(xrLocalSpace);
+          if (pose) {
+            arReticle.visible = true;
+            arReticle.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+            // Keep reticle flat on ground
+            arReticle.rotation.set(-Math.PI / 2, 0, 0);
+          }
+        } else {
+          if (arReticle) arReticle.visible = false;
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    /* =========================
+       Window resize
+       ========================= */
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function checkWinCondition() { /* hook for extra rules if needed */ }
+
+    /* =========================
+       UI buttons, start VR, start AR, reset, help
+       ========================= */
+    function setupUIButtons() {
+      const vrBtn = document.getElementById('vrButton');
+      const arBtn = document.getElementById('arButton');
+
+      // Start VR
+      vrBtn.addEventListener('click', async () => {
+        if (!navigator.xr) { showToast('WebXR not supported'); return; }
+        try {
+          isAR = false;
+          scene.background = new THREE.Color(0x87CEEB);
+          renderer.setClearAlpha(1.0);
+          const session = await navigator.xr.requestSession('immersive-vr', { requiredFeatures: ['local-floor'] });
+          if (controls) controls.enabled = false;
+          renderer.xr.setReferenceSpaceType('local-floor');
+          renderer.xr.setSession(session);
+          detectVRSystem(session);
+        } catch (e) { console.warn(e); showToast('Could not start VR session'); }
+      });
+
+      // Start AR with passthrough and hit test
+      arBtn.addEventListener('click', async () => {
+        if (!navigator.xr) { showToast('WebXR not supported'); return; }
+        try {
+          const supported = await navigator.xr.isSessionSupported('immersive-ar');
+          if (!supported) {
+            showToast('AR not available on this device');
+            arHint.style.display = 'block';
+            setTimeout(() => arHint.style.display = 'none', 3000);
+            return;
+          }
+          isAR = true;
+          scene.background = null;          // transparent
+          renderer.setClearAlpha(0.0);      // show real world
+          renderer.domElement.style.background = 'transparent';
+          const session = await navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['local-floor', 'hit-test']
+          });
+
+          xrViewerSpace = await session.requestReferenceSpace('viewer');
+          xrLocalSpace = await session.requestReferenceSpace('local-floor');
+          xrHitSource = await session.requestHitTestSource({ space: xrViewerSpace });
+
+          buildARReticle();
+          session.addEventListener('select', onARSelectPlaceStage);
+
+          renderer.xr.setReferenceSpaceType('local-floor');
+          renderer.xr.setSession(session);
+          stagePlaced = false;
+          showToast('Point at the floor to place the wall');
+        } catch (e) { console.warn(e); showToast('Could not start AR session'); }
+      });
+
+      // AR mobile controls
+      document.getElementById('arReplace').addEventListener('click', () => {
+        if (!isAR) return;
+        stagePlaced = false;
+        if (arReticle) arReticle.visible = false;
+        document.getElementById('arControls').classList.remove('visible');
+        showToast('Point at the floor to re-place the wall');
+      });
+      document.getElementById('arRotLeft').addEventListener('click', () => {
+        stageGroup.rotation.y += Math.PI / 12;
+      });
+      document.getElementById('arRotRight').addEventListener('click', () => {
+        stageGroup.rotation.y -= Math.PI / 12;
+      });
+      document.getElementById('arScaleDown').addEventListener('click', () => {
+        const s = Math.max(0.3, stageGroup.scale.x - 0.15);
+        stageGroup.scale.set(s, s, s);
+      });
+      document.getElementById('arScaleUp').addEventListener('click', () => {
+        const s = Math.min(2.5, stageGroup.scale.x + 0.15);
+        stageGroup.scale.set(s, s, s);
+      });
+
+      // Reset and Help
+      document.getElementById('resetButton').addEventListener('click', resetGame);
+      document.getElementById('helpButton').addEventListener('click', () => {
+        const helpOverlay = document.getElementById('helpOverlay');
+        const visible = helpOverlay.style.display !== 'none';
+        helpOverlay.style.display = visible ? 'none' : 'block';
+      });
+      document.getElementById('closeHelpBtn').addEventListener('click', () => {
+        document.getElementById('helpOverlay').style.display = 'none';
+      });
+    }
+
+    /* =========================
+       AR reticle builder, AR placement handler
+       ========================= */
+    function buildARReticle() {
+      if (arReticle) return;
+      const ring = new THREE.RingGeometry(0.08, 0.1, 32);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x4aa3ff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
+      const mesh = new THREE.Mesh(ring, mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.visible = false;
+      scene.add(mesh);
+      arReticle = mesh;
+    }
+
+    function onARSelectPlaceStage() {
+      if (!isAR || !arReticle) return;
+      if (!arReticle.visible) { showToast('Aim at the floor first'); return; }
+
+      // Move entire stage to the reticle pose
+      stageGroup.position.copy(arReticle.position);
+
+      // Face the user, yaw only
+      const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+      const yaw = Math.atan2(camDir.x, camDir.z);
+      stageGroup.rotation.set(0, yaw, 0);
+
+      stagePlaced = true;
+      arReticle.visible = false;
+      document.getElementById('arControls').classList.add('visible');
+      showToast('Placed, start building');
+    }
+
+    /* =========================
+       Kick off the app
+       ========================= */
+    init();
+  </script>
+</body>
+</html>
