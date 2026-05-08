@@ -184,6 +184,7 @@
     let isMobile = /Mobi|Android/i.test(navigator.userAgent);
     let mobileLookMode = false;
     let activePointerId = null;
+    let arGesture = null; // two-finger pinch/rotate state
 
     /* ================================================================
        SCENE ROOTS
@@ -252,14 +253,23 @@
       return v;
     }
 
-    function screenToGround(sx, sy) {
+    // Returns hit position in STAGE LOCAL space (world space when stage is at origin)
+    function screenToGroundLocal(sx, sy) {
       const near = sw(sx, sy, cameraEntity.camera.nearClip);
       const far  = sw(sx, sy, cameraEntity.camera.farClip);
       const dir  = new pc.Vec3().sub2(far, near).normalize();
+      const planeY = (isAR && stagePlaced) ? stageEntity.getPosition().y : 0;
       if (Math.abs(dir.y) < 0.0001) return null;
-      const t = (0 - near.y) / dir.y;
+      const t = (planeY - near.y) / dir.y;
       if (t < 0) return null;
-      return new pc.Vec3(near.x + dir.x*t, 0, near.z + dir.z*t);
+      const worldHit = new pc.Vec3(near.x + dir.x*t, planeY, near.z + dir.z*t);
+      if (isAR && stagePlaced) {
+        const inv = new pc.Mat4().copy(stageEntity.getWorldTransform()).invert();
+        const local = new pc.Vec3();
+        inv.transformPoint(worldHit, local);
+        return local;
+      }
+      return worldHit;
     }
 
     function pickBrick(sx, sy) {
@@ -267,11 +277,12 @@
       const far  = sw(sx, sy, cameraEntity.camera.farClip);
       const dir  = new pc.Vec3().sub2(far, near).normalize();
       const ray  = new pc.Ray(near, dir);
+      const sc   = stageEntity.getLocalScale().x; // account for AR stage scale
       let best = null, bestDist = Infinity;
       for (const b of bricks) {
         if (b.isPlaced) continue;
         const bp = b.entity.getPosition();
-        const bb = new pc.BoundingBox(bp, new pc.Vec3(b.brickWidth/2, BRICK_H/2, BRICK_D/2));
+        const bb = new pc.BoundingBox(bp, new pc.Vec3(b.brickWidth/2*sc, BRICK_H/2*sc, BRICK_D/2*sc));
         const hit = new pc.Vec3();
         if (bb.intersectsRay(ray, hit)) {
           const d = near.distance(hit);
@@ -284,13 +295,14 @@
     /* ================================================================
        HOVER HEIGHT  — prevents dragged brick sinking into placed ones
        ================================================================ */
-    function getHoverY(x, z) {
-      let minY = FLOOR_Y + BRICK_H/2;
+    // lx/lz are stage-local coordinates
+    function getHoverY(lx, lz) {
+      let minY = ROW1_Y;
       const PAD = 0.12, CLR = 0.08;
       for (const b of bricks) {
         if (!b.isPlaced) continue;
-        const bp = b.entity.getPosition();
-        if (Math.abs(x-bp.x) <= b.brickWidth/2+PAD && Math.abs(z-bp.z) <= BRICK_D/2+PAD) {
+        const bp = b.entity.getLocalPosition();
+        if (Math.abs(lx-bp.x) <= b.brickWidth/2+PAD && Math.abs(lz-bp.z) <= BRICK_D/2+PAD) {
           const top = bp.y + BRICK_H/2 + CLR + BRICK_H/2;
           if (top > minY) minY = top;
         }
@@ -312,8 +324,11 @@
         e.addComponent('model', { type: 'plane' });
         e.model.meshInstances[0].material   = makeMat(0xEBD9D1, 0.35);
         e.model.meshInstances[0].castShadow = false;
+        // Rotate plane to face +Z (toward camera) so it's visible on the wall
+        e.setEulerAngles(90, 0, 0);
         e.setLocalScale(pos.width, 1, BRICK_D);
-        e.setPosition(pos.x, pos.y - BRICK_H/2 - 0.01, pos.z);
+        // Center at brick position, 2cm in front of wall surface
+        e.setLocalPosition(pos.x, pos.y, pos.z + 0.02);
         stageEntity.addChild(e);
         slots.push({ entity: e, row: pos.row, type: pos.type, width: pos.width,
                      occupied: false, isHoverLit: false, _pulseT: Math.random()*Math.PI*2 });
@@ -345,17 +360,16 @@
       setRowVisibility(activeRow);
     }
 
-    function highlightNearbySlots(x, z) {
-      let bestDist = Infinity;
+    // lx/lz are stage-local coordinates
+    function highlightNearbySlots(lx, lz) {
       slots.forEach(s => {
         s.isHoverLit = false;
         if (!s.entity.enabled || s.occupied) return;
-        const sp = s.entity.getPosition();
-        const d  = Math.hypot(x-sp.x, z-sp.z);
+        const sp = s.entity.getLocalPosition();
+        const d  = Math.hypot(lx-sp.x, lz-sp.z);
         if (d < SNAP_RADIUS) {
           setSlotColor(s, 0xB87C4C, 0.80);
           s.isHoverLit = true;
-          if (d < bestDist) bestDist = d;
         }
       });
     }
@@ -392,8 +406,8 @@
       e.setLocalScale(w, BRICK_H, BRICK_D);
 
       const jx = (Math.random()-0.5)*0.1, jz = (Math.random()-0.5)*0.1;
-      const sp = findFreeSpawnXZ(1.2+jx, WALL_Z+0.9+jz, w, BRICK_D);
-      e.setPosition(sp.x, ROW1_Y, sp.z);
+      const sp = findFreeSpawnXZ(jx, WALL_Z+0.9+jz, w, BRICK_D); // centered on stage X
+      e.setLocalPosition(sp.x, ROW1_Y, sp.z);
 
       stageEntity.addChild(e);
       const data = { entity: e, brickWidth: w, isPlaced: false, slotIndex: null, _glowStr: 0, _glowEnt: null };
@@ -435,10 +449,10 @@
       return { x: sx - w*28, z: sz };
     }
 
-    function isOccupiedAt(x, z, w, d) {
+    function isOccupiedAt(lx, lz, w, d) {
       for (const b of bricks) {
-        const bp = b.entity.getPosition();
-        if (Math.abs(x-bp.x) < (w+b.brickWidth)/2 && Math.abs(z-bp.z) < (BRICK_D+d)/2) return true;
+        const bp = b.entity.getLocalPosition();
+        if (Math.abs(lx-bp.x) < (w+b.brickWidth)/2 && Math.abs(lz-bp.z) < (BRICK_D+d)/2) return true;
       }
       return false;
     }
@@ -453,20 +467,20 @@
 
     function snapToBrick(b) {
       const isHalf = b.brickWidth === HALF_BRICK_W;
-      const bp = b.entity.getPosition();
+      const bp = b.entity.getLocalPosition();
       let best = null, bestDist = SNAP_RADIUS;
       slots.forEach(s => {
         if (!s.entity.enabled || s.occupied) return;
         if (isHalf !== (s.type === 'half')) return;
-        const sp = s.entity.getPosition();
+        const sp = s.entity.getLocalPosition();
         const d  = Math.hypot(bp.x-sp.x, bp.z-sp.z);
         if (d < bestDist) { bestDist = d; best = s; }
       });
 
       if (best) {
         const rowY = ROW1_Y + best.row * (BRICK_H+GAP_Y);
-        const sp   = best.entity.getPosition();
-        b.entity.setPosition(sp.x, rowY, sp.z);
+        const sp   = best.entity.getLocalPosition();
+        b.entity.setLocalPosition(sp.x, rowY, sp.z - 0.02); // align to wall face
         b.isPlaced  = true;
         b.slotIndex = slots.indexOf(best);
         best.occupied      = true;
@@ -615,8 +629,26 @@
       const cp  = cameraEntity.getPosition();
       stageEntity.setEulerAngles(0, Math.atan2(cp.x-pos.x, cp.z-pos.z)*pc.math.RAD_TO_DEG, 0);
       stagePlaced = true; arReticleEntity.enabled = false;
+      document.getElementById('arHint').style.display = 'none';
       document.getElementById('arControls').classList.add('visible');
-      showToast('Placed — start building');
+      showToast('Wall placed — start building!');
+      // Ripple ring at placement point
+      const ring = new pc.Entity('placeRing');
+      ring.addComponent('model', { type: 'cylinder' });
+      ring.model.meshInstances[0].material = makeMat(0x4aa3ff, 0.8);
+      ring.setLocalScale(0.05, 0.008, 0.05);
+      ring.setPosition(pos.x, pos.y + 0.005, pos.z);
+      app.root.addChild(ring);
+      let elapsed = 0;
+      const animate = dt => {
+        elapsed += dt;
+        const s = 0.05 + elapsed * 2.5;
+        ring.setLocalScale(s, 0.008, s);
+        ring.model.meshInstances[0].material.opacity = Math.max(0, 0.8 - elapsed * 0.8);
+        ring.model.meshInstances[0].material.update();
+        if (elapsed >= 1) { app.off('update', animate); ring.destroy(); }
+      };
+      app.on('update', animate);
     }
 
     /* ================================================================
@@ -624,16 +656,26 @@
        ================================================================ */
     function onXRStart() {
       if (floorEntity) floorEntity.enabled = !isAR;
+      if (isAR) {
+        stagePlaced = false; arGesture = null;
+        stageEntity.setPosition(0, 0, 0); stageEntity.setEulerAngles(0, 0, 0);
+        document.getElementById('lookToggle').style.display = 'none';
+        document.getElementById('arControls').classList.remove('visible');
+        document.getElementById('arHint').style.display = 'block';
+        mobileLookMode = false;
+      }
       showToast(isAR ? 'AR active — tap floor to place' : 'VR active');
     }
 
     function onXREnd() {
-      isAR = stagePlaced = false;
+      isAR = stagePlaced = false; arGesture = null;
       cameraEntity.camera.clearColor.set(0.53, 0.81, 0.92, 1);
       if (floorEntity)     floorEntity.enabled = true;
       if (arReticleEntity) arReticleEntity.enabled = false;
       ctrlRigs.forEach(r => r.rig.destroy()); ctrlRigs.clear();
       document.getElementById('arControls').classList.remove('visible');
+      document.getElementById('arHint').style.display = 'none';
+      if (isMobile) document.getElementById('lookToggle').style.display = 'block';
       applyOrbit(); showToast('XR session ended');
     }
 
@@ -652,14 +694,21 @@
       if (app.xr?.active && vrGrabData) {
         const { b, source } = vrGrabData;
         const ray = getSourceRay(source);
-        const groundY = isAR ? stageEntity.getPosition().y : 0;
+        const groundY = (isAR && stagePlaced) ? stageEntity.getPosition().y : 0;
         if (Math.abs(ray.direction.y) > 0.0001) {
           const t = (groundY - ray.origin.y) / ray.direction.y;
           if (t > 0) {
-            const nx = ray.origin.x + ray.direction.x*t;
-            const nz = ray.origin.z + ray.direction.z*t;
-            b.entity.setPosition(nx, getHoverY(nx, nz), nz);
-            highlightNearbySlots(nx, nz);
+            const wx = ray.origin.x + ray.direction.x*t;
+            const wz = ray.origin.z + ray.direction.z*t;
+            const worldHit = new pc.Vec3(wx, groundY, wz);
+            let lx, lz;
+            if (isAR && stagePlaced) {
+              const inv = new pc.Mat4().copy(stageEntity.getWorldTransform()).invert();
+              const lp = new pc.Vec3(); inv.transformPoint(worldHit, lp);
+              lx = lp.x; lz = lp.z;
+            } else { lx = wx; lz = wz; }
+            b.entity.setLocalPosition(lx, getHoverY(lx, lz), lz);
+            highlightNearbySlots(lx, lz);
           }
         }
       }
@@ -688,8 +737,8 @@
           if (!b) return;
           releaseBrickFromSlot(b);
           selectedBrick = b; audioGrab();
-          const hit = screenToGround(e.x, e.y);
-          if (hit) { const bp = b.entity.getPosition(); grabOffsetX = bp.x-hit.x; grabOffsetZ = bp.z-hit.z; }
+          const hit = screenToGroundLocal(e.x, e.y);
+          if (hit) { const bp = b.entity.getLocalPosition(); grabOffsetX = bp.x-hit.x; grabOffsetZ = bp.z-hit.z; }
           if (navigator.vibrate) navigator.vibrate(15);
         }
       });
@@ -701,10 +750,10 @@
           applyOrbit();
         }
         if (selectedBrick) {
-          const hit = screenToGround(e.x, e.y);
+          const hit = screenToGroundLocal(e.x, e.y);
           if (hit) {
             const nx = hit.x+grabOffsetX, nz = hit.z+grabOffsetZ;
-            selectedBrick.entity.setPosition(nx, getHoverY(nx, nz), nz);
+            selectedBrick.entity.setLocalPosition(nx, getHoverY(nx, nz), nz);
             highlightNearbySlots(nx, nz);
           }
         }
@@ -731,30 +780,77 @@
     if (app.touch) {
       app.touch.on(pc.EVENT_TOUCHSTART, ev => {
         if (isAR && !stagePlaced) { placeStageAtReticle(); return; }
+
+        // Two-finger pinch/rotate gesture for stage manipulation in AR
+        if (isAR && stagePlaced && ev.touches.length >= 2) {
+          if (selectedBrick) {
+            snapToBrick(selectedBrick); selectedBrick = null;
+            activePointerId = null; updateScoreDisplay();
+          }
+          const ta = ev.touches[0], tb = ev.touches[1];
+          const dx = tb.x-ta.x, dy = tb.y-ta.y;
+          const ea = stageEntity.getEulerAngles();
+          arGesture = {
+            id1: ta.identifier, id2: tb.identifier,
+            initDist: Math.hypot(dx, dy),
+            initAngle: Math.atan2(dy, dx),
+            initScale: stageEntity.getLocalScale().x,
+            initAngleY: ea.y
+          };
+          return;
+        }
+
         if (mobileLookMode || activePointerId !== null) return;
         const t0 = ev.changedTouches[0];
         const b  = pickBrick(t0.x, t0.y);
         if (!b) return;
         activePointerId = t0.identifier;
         releaseBrickFromSlot(b); selectedBrick = b; audioGrab();
-        const hit = screenToGround(t0.x, t0.y);
-        if (hit) { const bp = b.entity.getPosition(); grabOffsetX = bp.x-hit.x; grabOffsetZ = bp.z-hit.z; }
+        const hit = screenToGroundLocal(t0.x, t0.y);
+        if (hit) { const bp = b.entity.getLocalPosition(); grabOffsetX = bp.x-hit.x; grabOffsetZ = bp.z-hit.z; }
       });
 
       app.touch.on(pc.EVENT_TOUCHMOVE, ev => {
+        // Two-finger AR gesture: pinch = scale, rotate angle = Y rotation
+        if (arGesture) {
+          let ta = null, tb = null;
+          for (const t of Array.from(ev.touches)) {
+            if (t.identifier === arGesture.id1) ta = t;
+            if (t.identifier === arGesture.id2) tb = t;
+          }
+          if (!ta || !tb) { arGesture = null; return; }
+          const dx = tb.x-ta.x, dy = tb.y-ta.y;
+          const dist  = Math.hypot(dx, dy);
+          const angle = Math.atan2(dy, dx);
+          const newScale = Math.max(0.3, Math.min(2.5, arGesture.initScale * (dist / arGesture.initDist)));
+          stageEntity.setLocalScale(newScale, newScale, newScale);
+          const dAngle = (angle - arGesture.initAngle) * pc.math.RAD_TO_DEG;
+          stageEntity.setEulerAngles(0, arGesture.initAngleY - dAngle, 0);
+          return;
+        }
+
         if (mobileLookMode || activePointerId === null || !selectedBrick) return;
         for (const t of Array.from(ev.changedTouches)) {
           if (t.identifier !== activePointerId) continue;
-          const hit = screenToGround(t.x, t.y);
+          const hit = screenToGroundLocal(t.x, t.y);
           if (hit) {
             const nx = hit.x+grabOffsetX, nz = hit.z+grabOffsetZ;
-            selectedBrick.entity.setPosition(nx, getHoverY(nx, nz), nz);
+            selectedBrick.entity.setLocalPosition(nx, getHoverY(nx, nz), nz);
             highlightNearbySlots(nx, nz);
           }
         }
       });
 
       app.touch.on(pc.EVENT_TOUCHEND, ev => {
+        // End gesture when either finger lifts
+        if (arGesture) {
+          for (const t of Array.from(ev.changedTouches)) {
+            if (t.identifier === arGesture.id1 || t.identifier === arGesture.id2) {
+              arGesture = null; break;
+            }
+          }
+          return;
+        }
         for (const t of Array.from(ev.changedTouches)) {
           if (t.identifier !== activePointerId) continue;
           activePointerId = null;
