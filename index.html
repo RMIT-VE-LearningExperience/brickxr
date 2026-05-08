@@ -1034,20 +1034,37 @@
     wallBackdrop.setPosition(0, ROW1_Y + (ROWS-1)*(BRICK_H+GAP_Y)*0.5, WALL_Z - 0.12);
     stageEntity.addChild(wallBackdrop);
 
-    // Gaussian Splat environment — loaded async, hides flat floor when ready
+    // Gaussian Splat environment — rendered in a dedicated background layer so
+    // game objects (bricks, wall) always draw in front regardless of GS depth.
+    //
+    // Layer order: [gsLayer] → [LAYERID_WORLD (clearDepth=true)] → [UI]
+    // GS renders first; world layer clears depth before drawing game objects,
+    // so game objects always win the depth test against the GS environment.
+    const gsLayer = new pc.Layer({ name: 'GSBackground' });
+    app.scene.layers.insert(gsLayer, 0);
+
+    const worldLayer = app.scene.layers.getLayerById(pc.LAYERID_WORLD);
+    if (worldLayer) worldLayer.clearDepthBuffer = true;
+
+    // Register the new layer with the camera
+    const _camLayers = Array.from(cameraEntity.camera.layers || []);
+    if (!_camLayers.includes(gsLayer.id)) {
+      cameraEntity.camera.layers = [gsLayer.id, ..._camLayers];
+    }
+
     const gsAsset = new pc.Asset('gs_env', 'gsplat', { url: 'gs/scene.sog' });
     app.assets.add(gsAsset);
     app.assets.load(gsAsset);
     gsAsset.ready(() => {
       gsplatEntity = new pc.Entity('gsplat_env');
       gsplatEntity.addComponent('gsplat', { asset: gsAsset });
-      // Position and orientation will need tuning per scene; start at origin
+      // Confine GS to the background layer so world geometry is unaffected
+      if (gsplatEntity.gsplat.layers !== undefined) {
+        gsplatEntity.gsplat.layers = [gsLayer.id];
+      }
       gsplatEntity.setPosition(0, 0, 0);
-      gsplatEntity.setEulerAngles(0, 0, 0);
       app.root.addChild(gsplatEntity);
-      // Hide the flat placeholder floor — GS provides the environment
       if (floorEntity) floorEntity.enabled = false;
-      // Switch sky to near-black so GS splats fill seamlessly to the edges
       cameraEntity.camera.clearColor.set(0.04, 0.04, 0.04, 1);
     });
     gsAsset.on('error', () => showToast('GS environment failed to load'));
