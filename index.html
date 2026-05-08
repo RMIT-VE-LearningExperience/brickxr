@@ -199,7 +199,7 @@
     /* ================================================================
        SCENE ROOTS
        ================================================================ */
-    let cameraEntity, stageEntity, floorEntity, arReticleEntity;
+    let cameraEntity, stageEntity, floorEntity, arReticleEntity, gsplatEntity;
     const orbit = { yaw: 0, pitch: 30, radius: 2.8, active: false };
     const ctrlRigs = new Map(); // XrInputSource → { entity, rayEnt }
 
@@ -665,22 +665,35 @@
        XR SESSION EVENTS
        ================================================================ */
     function onXRStart() {
-      if (floorEntity) floorEntity.enabled = !isAR;
       if (isAR) {
+        // AR: camera passthrough is the environment — hide GS and virtual floor
+        if (gsplatEntity) gsplatEntity.enabled = false;
+        if (floorEntity)  floorEntity.enabled  = false;
         stagePlaced = false; arGesture = null;
         stageEntity.setPosition(0, 0, 0); stageEntity.setEulerAngles(0, 0, 0);
         document.getElementById('lookToggle').style.display = 'none';
         document.getElementById('arControls').classList.remove('visible');
         document.getElementById('arHint').style.display = 'block';
         mobileLookMode = false;
+      } else {
+        // VR: GS is the virtual environment; hide flat floor
+        if (gsplatEntity) gsplatEntity.enabled = true;
+        if (floorEntity)  floorEntity.enabled  = false;
       }
       showToast(isAR ? 'AR active — tap floor to place' : 'VR active');
     }
 
     function onXREnd() {
       isAR = stagePlaced = false; arGesture = null;
-      cameraEntity.camera.clearColor.set(0.53, 0.81, 0.92, 1);
-      if (floorEntity)     floorEntity.enabled = true;
+      // Restore: GS environment back on, flat floor stays hidden if GS loaded
+      if (gsplatEntity) {
+        gsplatEntity.enabled = true;
+        cameraEntity.camera.clearColor.set(0.04, 0.04, 0.04, 1);
+        if (floorEntity) floorEntity.enabled = false;
+      } else {
+        cameraEntity.camera.clearColor.set(0.53, 0.81, 0.92, 1);
+        if (floorEntity) floorEntity.enabled = true;
+      }
       if (arReticleEntity) arReticleEntity.enabled = false;
       ctrlRigs.forEach(r => r.rig.destroy()); ctrlRigs.clear();
       document.getElementById('arControls').classList.remove('visible');
@@ -1020,6 +1033,24 @@
     wallBackdrop.setLocalScale(wallW, 1, wallH);
     wallBackdrop.setPosition(0, ROW1_Y + (ROWS-1)*(BRICK_H+GAP_Y)*0.5, WALL_Z - 0.12);
     stageEntity.addChild(wallBackdrop);
+
+    // Gaussian Splat environment — loaded async, hides flat floor when ready
+    const gsAsset = new pc.Asset('gs_env', 'gsplat', { url: 'gs/scene.sog' });
+    app.assets.add(gsAsset);
+    app.assets.load(gsAsset);
+    gsAsset.ready(() => {
+      gsplatEntity = new pc.Entity('gsplat_env');
+      gsplatEntity.addComponent('gsplat', { asset: gsAsset });
+      // Position and orientation will need tuning per scene; start at origin
+      gsplatEntity.setPosition(0, 0, 0);
+      gsplatEntity.setEulerAngles(0, 0, 0);
+      app.root.addChild(gsplatEntity);
+      // Hide the flat placeholder floor — GS provides the environment
+      if (floorEntity) floorEntity.enabled = false;
+      // Switch sky to near-black so GS splats fill seamlessly to the edges
+      cameraEntity.camera.clearColor.set(0.04, 0.04, 0.04, 1);
+    });
+    gsAsset.on('error', () => showToast('GS environment failed to load'));
 
     // AR reticle
     arReticleEntity = buildARReticle();
