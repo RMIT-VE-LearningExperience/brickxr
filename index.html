@@ -189,7 +189,7 @@
        SCENE ROOTS
        ================================================================ */
     let cameraEntity, stageEntity, floorEntity, arReticleEntity;
-    const orbit = { yaw: -10, pitch: 22, radius: 1.9, active: false };
+    const orbit = { yaw: 0, pitch: 30, radius: 2.8, active: false };
     const ctrlRigs = new Map(); // XrInputSource → { entity, rayEnt }
 
     /* ================================================================
@@ -231,7 +231,7 @@
     function applyOrbit() {
       if (!cameraEntity) return;
       const wallCY = ROW1_Y + (ROWS-1) * (BRICK_H+GAP_Y) * 0.5;
-      const tgt = new pc.Vec3(0, wallCY, WALL_Z);
+      const tgt = new pc.Vec3(0, wallCY * 0.6, WALL_Z * 0.45);
       const yR  = orbit.yaw   * pc.math.DEG_TO_RAD;
       const pR  = orbit.pitch * pc.math.DEG_TO_RAD;
       const r   = orbit.radius;
@@ -892,6 +892,18 @@
     ring.model.meshInstances[0].castShadow = false;
     ring.setLocalScale(2.84, 0.005, 2.84); ring.setPosition(0, FLOOR_Y+0.01, WALL_Z);
     stageEntity.addChild(ring);
+
+    // Wall backdrop — gives the slot area a visible surface to look at
+    const wallW = COLS * (BRICK_W + GAP_X) + 0.4;
+    const wallH = ROWS * (BRICK_H + GAP_Y) + 0.15;
+    const wallBackdrop = new pc.Entity('wallBackdrop');
+    wallBackdrop.addComponent('model', { type: 'plane' });
+    wallBackdrop.model.meshInstances[0].material   = makeMat(0xD4C5B0, 0.6);
+    wallBackdrop.model.meshInstances[0].castShadow = false;
+    wallBackdrop.setEulerAngles(90, 0, 0);
+    wallBackdrop.setLocalScale(wallW, 1, wallH);
+    wallBackdrop.setPosition(0, ROW1_Y + (ROWS-1)*(BRICK_H+GAP_Y)*0.5, WALL_Z - 0.12);
+    stageEntity.addChild(wallBackdrop);
 
     // AR reticle
     arReticleEntity = buildARReticle();
