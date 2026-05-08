@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>BrickXR — PlayCanvas</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/playcanvas/build/playcanvas.min.js"></script>
+</head>
+<body>
+  <canvas id="appCanvas"></canvas>
+
+  <div id="uiOverlay">
+    <h2>BrickXR</h2>
+    <div id="scoreDisplay">Score: 0</div>
+    <div id="moveDisplay">Moves: 0</div>
+    <div id="timeDisplay">Time: 0s</div>
+  </div>
+
+  <div id="helpOverlay">
+    <button class="closeHelp" id="closeHelpBtn">Close</button>
+    <strong>Goal:</strong> stack all bricks into the glowing slots<br>
+    <strong>Note:</strong> finish each row to unlock the next<br>
+    <strong>VR:</strong> point and squeeze trigger to grab, release to snap<br>
+    <strong>Desktop:</strong> left-drag moves bricks · right-drag orbits · scroll zooms<br>
+    <strong>Mobile:</strong> one finger moves bricks; tap Look to switch to orbit<br>
+    <strong>AR:</strong> tap the floor to place the wall, then use AR Controls to adjust
+  </div>
+
+  <button id="vrButton">Enter VR</button>
+  <button id="arButton">Enter AR</button>
+  <button id="resetButton">New Game</button>
+  <button id="helpButton">Help</button>
+  <button id="lookToggle" aria-pressed="false">Look: Off</button>
+
+  <div id="status"></div>
+  <div id="arHint">Point at the floor to place the wall</div>
+  <div id="arControls">
+    <div class="ar-label">AR Controls</div>
+    <button class="ar-ctrl-btn secondary" id="arReplace">Re-place</button>
+    <button class="ar-ctrl-btn" id="arRotLeft">↺</button>
+    <button class="ar-ctrl-btn" id="arRotRight">↻</button>
+    <button class="ar-ctrl-btn" id="arScaleDown">−</button>
+    <button class="ar-ctrl-btn" id="arScaleUp">+</button>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

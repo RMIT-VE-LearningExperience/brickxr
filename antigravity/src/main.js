@@ -1,0 +1,795 @@
+/* ================================================================
+   CONSTANTS
+   ================================================================ */
+const BRICK_W      = 0.4;
+const BRICK_H      = 0.175;
+const BRICK_D      = 0.2;
+const HALF_BRICK_W = BRICK_W / 2;
+const ROW1_Y       = BRICK_H / 2;
+const GAP_Y        = 0.05;
+const ROWS         = 5;
+const COLS         = 8;
+const GAP_X        = 0.05;
+const WALL_Z       = -1.5;
+const FLOOR_Y      = -0.5;
+const SNAP_RADIUS  = 0.35;
+const PALETTE      = [0xa8bba3, 0xb87c4c, 0xf7f4ea, 0xebd9d1, 0x9db29a, 0xa06e45];
+
+/* ================================================================
+   AUDIO  — procedural tones via Web Audio, no asset files
+   ================================================================ */
+let _audioCtx = null;
+function _ac() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return _audioCtx;
+}
+function playTone(freq, dur, type = 'sine', vol = 0.22) {
+  try {
+    const ctx = _ac(), osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.connect(g); g.connect(ctx.destination);
+    osc.type = type; osc.frequency.value = freq;
+    g.gain.setValueAtTime(vol, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.start(); osc.stop(ctx.currentTime + dur);
+  } catch (_) {}
+}
+const audioGrab     = () => playTone(220, 0.07, 'square', 0.10);
+const audioSnap     = () => { playTone(440, 0.14); setTimeout(() => playTone(660, 0.10), 55); };
+const audioRowDone  = () => [523, 659, 784].forEach((f, i) => setTimeout(() => playTone(f, 0.3), i * 75));
+const audioComplete = () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playTone(f, 0.5), i * 85));
+
+function showToast(text, ms = 2500) {
+  const el = document.createElement('div');
+  el.className = 'toast'; el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+/* ================================================================
+   PLAYCANVAS APP
+   ================================================================ */
+const canvas = document.getElementById('appCanvas');
+const app = new pc.Application(canvas, {
+  mouse: new pc.Mouse(canvas),
+  touch: new pc.TouchDevice(canvas),
+  graphicsDeviceOptions: { antialias: true, alpha: true }
+});
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+window.addEventListener('resize', () => app.resizeCanvas());
+app.start();
+
+/* ================================================================
+   GAME STATE
+   ================================================================ */
+let score = 0, moves = 0, bricksPlaced = 0, currentBrickNumber = 1;
+let TOTAL_BRICKS = 0, activeRow = 0, startTime = Date.now();
+let BRICK_POSITIONS = [], HALF_POSITIONS = [];
+
+let slots = [];
+let bricks = [];
+
+let selectedBrick = null;
+let grabOffsetX = 0, grabOffsetZ = 0;
+let isAR = false, stagePlaced = false;
+let isMobile = /Mobi|Android/i.test(navigator.userAgent);
+let mobileLookMode = false;
+let activePointerId = null;
+
+/* ================================================================
+   SCENE ROOTS
+   ================================================================ */
+let cameraEntity, stageEntity, floorEntity, arReticleEntity;
+const orbit = { yaw: 0, pitch: 30, radius: 2.8, active: false };
+const ctrlRigs = new Map();
+
+/* ================================================================
+   SLOT POSITION MATHS
+   ================================================================ */
+function rebuildBrickPositions() {
+  BRICK_POSITIONS = []; HALF_POSITIONS = [];
+  const startX = -((COLS - 1) / 2) * (BRICK_W + GAP_X);
+  for (let r = 0; r < ROWS; r++) {
+    const y      = ROW1_Y + r * (BRICK_H + GAP_Y);
+    const offset = (r % 2 === 1) ? (BRICK_W + GAP_X) / 2 : 0;
+    for (let c = 0; c < COLS; c++)
+      BRICK_POSITIONS.push({ x: startX + c * (BRICK_W + GAP_X) + offset, y, z: WALL_Z, row: r });
+    if (r % 2 === 0) {
+      HALF_POSITIONS.push({ x: startX + (COLS-1)*(BRICK_W+GAP_X) + offset + 0.75*BRICK_W + GAP_X, y, z: WALL_Z, row: r, side: 'right' });
+    } else {
+      HALF_POSITIONS.push({ x: startX + offset - 0.75*BRICK_W - GAP_X, y, z: WALL_Z, row: r, side: 'left' });
+    }
+  }
+}
+
+/* ================================================================
+   MATERIAL FACTORY
+   ================================================================ */
+function makeMat(hex, opacity) {
+  const mat = new pc.StandardMaterial();
+  mat.diffuse.set(((hex>>16)&0xff)/255, ((hex>>8)&0xff)/255, (hex&0xff)/255);
+  mat.roughness = 0.85; mat.metalness = 0;
+  if (opacity !== undefined && opacity < 1) {
+    mat.opacity = opacity; mat.blendType = pc.BLEND_NORMAL; mat.depthWrite = false;
+  }
+  mat.update();
+  return mat;
+}
+
+/* ================================================================
+   ORBIT CAMERA
+   ================================================================ */
+function applyOrbit() {
+  if (!cameraEntity) return;
+  const wallCY = ROW1_Y + (ROWS-1) * (BRICK_H+GAP_Y) * 0.5;
+  const tgt = new pc.Vec3(0, wallCY * 0.6, WALL_Z * 0.45);
+  const yR  = orbit.yaw   * pc.math.DEG_TO_RAD;
+  const pR  = orbit.pitch * pc.math.DEG_TO_RAD;
+  const r   = orbit.radius;
+  cameraEntity.setPosition(
+    tgt.x + r * Math.sin(yR) * Math.cos(pR),
+    tgt.y + r * Math.sin(pR),
+    tgt.z + r * Math.cos(yR) * Math.cos(pR)
+  );
+  cameraEntity.lookAt(tgt);
+}
+
+/* ================================================================
+   RAY HELPERS
+   ================================================================ */
+function sw(sx, sy, depth) {
+  const v = new pc.Vec3();
+  cameraEntity.camera.screenToWorld(sx, sy, depth, v);
+  return v;
+}
+
+function screenToGround(sx, sy) {
+  const near = sw(sx, sy, cameraEntity.camera.nearClip);
+  const far  = sw(sx, sy, cameraEntity.camera.farClip);
+  const dir  = new pc.Vec3().sub2(far, near).normalize();
+  if (Math.abs(dir.y) < 0.0001) return null;
+  const t = (0 - near.y) / dir.y;
+  if (t < 0) return null;
+  return new pc.Vec3(near.x + dir.x*t, 0, near.z + dir.z*t);
+}
+
+function pickBrick(sx, sy) {
+  const near = sw(sx, sy, cameraEntity.camera.nearClip);
+  const far  = sw(sx, sy, cameraEntity.camera.farClip);
+  const dir  = new pc.Vec3().sub2(far, near).normalize();
+  const ray  = new pc.Ray(near, dir);
+  let best = null, bestDist = Infinity;
+  for (const b of bricks) {
+    if (b.isPlaced) continue;
+    const bp = b.entity.getPosition();
+    const bb = new pc.BoundingBox(bp, new pc.Vec3(b.brickWidth/2, BRICK_H/2, BRICK_D/2));
+    const hit = new pc.Vec3();
+    if (bb.intersectsRay(ray, hit)) {
+      const d = near.distance(hit);
+      if (d < bestDist) { bestDist = d; best = b; }
+    }
+  }
+  return best;
+}
+
+/* ================================================================
+   HOVER HEIGHT
+   ================================================================ */
+function getHoverY(x, z) {
+  let minY = FLOOR_Y + BRICK_H/2;
+  const PAD = 0.12, CLR = 0.08;
+  for (const b of bricks) {
+    if (!b.isPlaced) continue;
+    const bp = b.entity.getPosition();
+    if (Math.abs(x-bp.x) <= b.brickWidth/2+PAD && Math.abs(z-bp.z) <= BRICK_D/2+PAD) {
+      const top = bp.y + BRICK_H/2 + CLR + BRICK_H/2;
+      if (top > minY) minY = top;
+    }
+  }
+  return Math.max(minY, ROW1_Y);
+}
+
+/* ================================================================
+   SLOT MANAGEMENT
+   ================================================================ */
+function createSlotMarkers() {
+  slots = [];
+  const allSlots = [
+    ...BRICK_POSITIONS.map(p => ({ ...p, type: 'full',  width: BRICK_W })),
+    ...HALF_POSITIONS .map(p => ({ ...p, type: 'half',  width: HALF_BRICK_W }))
+  ];
+  allSlots.forEach((pos, i) => {
+    const e = new pc.Entity(`slot_${i}`);
+    e.addComponent('model', { type: 'plane' });
+    e.model.meshInstances[0].material   = makeMat(0xEBD9D1, 0.35);
+    e.model.meshInstances[0].castShadow = false;
+    e.setLocalScale(pos.width, 1, BRICK_D);
+    e.setPosition(pos.x, pos.y - BRICK_H/2 - 0.01, pos.z);
+    stageEntity.addChild(e);
+    slots.push({ entity: e, row: pos.row, type: pos.type, width: pos.width,
+                 occupied: false, isHoverLit: false, _pulseT: Math.random()*Math.PI*2 });
+  });
+}
+
+function setRowVisibility(row) {
+  slots.forEach(s => {
+    if (s.occupied) { s.entity.enabled = false; return; }
+    s.entity.enabled = (s.row === row);
+    if (s.entity.enabled) setSlotColor(s, 0xEBD9D1, 0.35);
+  });
+}
+
+function setSlotColor(s, hex, opacity) {
+  const mat = s.entity.model.meshInstances[0].material;
+  mat.diffuse.set(((hex>>16)&0xff)/255, ((hex>>8)&0xff)/255, (hex&0xff)/255);
+  mat.opacity = opacity; mat.update();
+}
+
+function isRowComplete(row) {
+  return slots.filter(s => s.row === row).every(s => s.occupied);
+}
+
+function recomputeActiveRow() {
+  let r = 0;
+  while (r < ROWS && isRowComplete(r)) r++;
+  activeRow = Math.min(r, ROWS-1);
+  setRowVisibility(activeRow);
+}
+
+function highlightNearbySlots(x, z) {
+  let bestDist = Infinity;
+  slots.forEach(s => {
+    s.isHoverLit = false;
+    if (!s.entity.enabled || s.occupied) return;
+    const sp = s.entity.getPosition();
+    const d  = Math.hypot(x-sp.x, z-sp.z);
+    if (d < SNAP_RADIUS) {
+      setSlotColor(s, 0xB87C4C, 0.80);
+      s.isHoverLit = true;
+      if (d < bestDist) bestDist = d;
+    }
+  });
+}
+
+function pulseSlots(dt) {
+  slots.forEach(s => {
+    if (!s.entity.enabled || s.occupied || s.isHoverLit) return;
+    s._pulseT += dt;
+    const wave = 0.5 + 0.5 * Math.sin(s._pulseT * 2.2);
+    setSlotColor(s, 0xEBD9D1, 0.25 + 0.2 * wave);
+  });
+}
+
+/* ================================================================
+   BRICK SPAWN, SNAP, RESET
+   ================================================================ */
+function spawnNextBrick() {
+  if (!slots.some(s => !s.occupied)) return;
+
+  const rowFull = slots.some(s => !s.occupied && s.row === activeRow && s.type === 'full');
+  const rowHalf = slots.some(s => !s.occupied && s.row === activeRow && s.type === 'half');
+  let spawnType = 'full';
+  if (!rowFull && rowHalf) spawnType = 'half';
+  if (!rowFull && !rowHalf)
+    spawnType = slots.some(s => !s.occupied && s.type === 'half') ? 'half' : 'full';
+
+  const w     = spawnType === 'half' ? HALF_BRICK_W : BRICK_W;
+  const color = PALETTE[(currentBrickNumber-1) % PALETTE.length];
+
+  const e = new pc.Entity(`brick_${currentBrickNumber}`);
+  e.addComponent('model', { type: 'box' });
+  e.model.meshInstances[0].material   = makeMat(color);
+  e.model.meshInstances[0].castShadow = true;
+  e.setLocalScale(w, BRICK_H, BRICK_D);
+
+  const jx = (Math.random()-0.5)*0.1, jz = (Math.random()-0.5)*0.1;
+  const sp = findFreeSpawnXZ(1.2+jx, WALL_Z+0.9+jz, w, BRICK_D);
+  e.setPosition(sp.x, ROW1_Y, sp.z);
+
+  stageEntity.addChild(e);
+  const data = { entity: e, brickWidth: w, isPlaced: false, slotIndex: null, _glowStr: 0, _glowEnt: null };
+  buildGlow(data);
+  bricks.push(data);
+}
+
+function buildGlow(b) {
+  const g = new pc.Entity('glow');
+  g.addComponent('model', { type: 'box' });
+  const mat = new pc.StandardMaterial();
+  mat.diffuse.set(0.48, 0.56, 0.42);
+  mat.opacity = 0; mat.blendType = pc.BLEND_NORMAL; mat.depthWrite = false; mat.update();
+  g.model.meshInstances[0].material = mat;
+  g.setLocalScale(1.07, 1.07, 1.07);
+  b.entity.addChild(g);
+  b._glowEnt = g; b._glowMat = mat;
+}
+
+function updateGlow(b, grabbed, dt) {
+  const target = grabbed ? 0.5 : 0;
+  b._glowStr = b._glowStr + (target - b._glowStr) * Math.min(1, dt*10);
+  if (b._glowMat && Math.abs(b._glowStr - b._glowMat.opacity) > 0.005) {
+    b._glowMat.opacity = b._glowStr; b._glowMat.update();
+  }
+}
+
+function removeGlow(b) {
+  if (b._glowEnt) { b._glowEnt.destroy(); b._glowEnt = null; b._glowMat = null; }
+}
+
+function findFreeSpawnXZ(sx, sz, w, d) {
+  if (!isOccupiedAt(sx, sz, w, d)) return { x:sx, z:sz };
+  for (let i = 1; i <= 24; i++) {
+    const dir = i%2===0 ? -1 : 1;
+    const nx = sx + dir*w*0.65*i, nz = sz + ((i%3)-1)*d*0.3;
+    if (!isOccupiedAt(nx, nz, w, d)) return { x:nx, z:nz };
+  }
+  return { x: sx - w*28, z: sz };
+}
+
+function isOccupiedAt(x, z, w, d) {
+  for (const b of bricks) {
+    const bp = b.entity.getPosition();
+    if (Math.abs(x-bp.x) < (w+b.brickWidth)/2 && Math.abs(z-bp.z) < (BRICK_D+d)/2) return true;
+  }
+  return false;
+}
+
+function releaseBrickFromSlot(b) {
+  if (!b.isPlaced || b.slotIndex == null) return;
+  const s = slots[b.slotIndex];
+  if (s) { s.occupied = false; s.entity.enabled = (s.row === activeRow); }
+  b.isPlaced = false; b.slotIndex = null;
+  if (bricksPlaced > 0) { bricksPlaced--; updateProgress(); recomputeActiveRow(); }
+}
+
+function snapToBrick(b) {
+  const isHalf = b.brickWidth === HALF_BRICK_W;
+  const bp = b.entity.getPosition();
+  let best = null, bestDist = SNAP_RADIUS;
+  slots.forEach(s => {
+    if (!s.entity.enabled || s.occupied) return;
+    if (isHalf !== (s.type === 'half')) return;
+    const sp = s.entity.getPosition();
+    const d  = Math.hypot(bp.x-sp.x, bp.z-sp.z);
+    if (d < bestDist) { bestDist = d; best = s; }
+  });
+
+  if (best) {
+    const rowY = ROW1_Y + best.row * (BRICK_H+GAP_Y);
+    const sp   = best.entity.getPosition();
+    b.entity.setPosition(sp.x, rowY, sp.z);
+    b.isPlaced  = true;
+    b.slotIndex = slots.indexOf(best);
+    best.occupied      = true;
+    best.entity.enabled = false;
+    removeGlow(b);
+    bricksPlaced++; currentBrickNumber++;
+    updateProgress();
+    audioSnap(); if (navigator.vibrate) navigator.vibrate(60);
+
+    if (best.row === activeRow && isRowComplete(activeRow) && activeRow < ROWS-1) {
+      activeRow++;
+      setRowVisibility(activeRow);
+      audioRowDone();
+      showToast(`Row ${best.row+1} complete — next row unlocked`);
+    }
+    if (bricksPlaced < TOTAL_BRICKS) setTimeout(spawnNextBrick, 800);
+    else onComplete();
+    return true;
+  }
+  return false;
+}
+
+function onComplete() {
+  const elapsed = Math.max(1, Math.floor((Date.now()-startTime)/1000));
+  const pts = Math.max(15, 150 + Math.max(0,60-elapsed) - Math.max(0,moves-TOTAL_BRICKS)*8);
+  score += pts; audioComplete();
+  showToast(`Wall complete! +${pts} pts`);
+  updateScoreDisplay(); updateProgress();
+}
+
+function resetGame() {
+  selectedBrick = null;
+  bricks.forEach(b => b.entity && b.entity.destroy()); bricks = [];
+  slots.forEach(s => s.entity && s.entity.destroy());  slots = [];
+  rebuildBrickPositions();
+  TOTAL_BRICKS = ROWS*COLS + HALF_POSITIONS.length;
+  createSlotMarkers();
+  activeRow = 0; bricksPlaced = 0; currentBrickNumber = 1;
+  moves = 0; startTime = Date.now();
+  setRowVisibility(0); spawnNextBrick();
+  renderStatusUI(); updateProgress(); updateScoreDisplay();
+  showToast('New game');
+}
+
+/* ================================================================
+   VR CONTROLLER RIGS
+   ================================================================ */
+let vrGrabData = null; // { b, source }
+
+function setupVRInput() {
+  if (!app.xr?.input) return;
+  app.xr.input.on('add', source => {
+    const rig = new pc.Entity('ctrlRig');
+    const handle = new pc.Entity('handle');
+    handle.addComponent('model', { type: 'cylinder' });
+    handle.model.meshInstances[0].material = makeMat(0xF7F4EA);
+    handle.setLocalScale(0.028, 0.055, 0.028);
+    handle.setLocalPosition(0, 0, -0.025); handle.setLocalEulerAngles(90, 0, 0);
+    rig.addChild(handle);
+
+    const ray = new pc.Entity('ray');
+    ray.addComponent('model', { type: 'box' });
+    ray.model.meshInstances[0].material = makeMat(0xEBD9D1, 0.65);
+    ray.setLocalScale(0.004, 0.004, 1.3); ray.setLocalPosition(0, 0, -0.65);
+    rig.addChild(ray);
+    app.root.addChild(rig);
+    ctrlRigs.set(source, { rig, ray });
+
+    source.on('select', () => {
+      if (vrGrabData) return;
+      const b = pickWithSource(source);
+      if (!b) return;
+      releaseBrickFromSlot(b);
+      b.isGrabbed = true;
+      vrGrabData = { b, source };
+      ray.model.meshInstances[0].material = makeMat(0xB87C4C, 0.9);
+      audioGrab(); try { source.gamepad?.hapticActuators?.[0]?.pulse(0.4, 80); } catch(_) {}
+    });
+
+    source.on('selectend', () => {
+      if (!vrGrabData || vrGrabData.source !== source) return;
+      const b = vrGrabData.b;
+      b.isGrabbed = false; moves++;
+      snapToBrick(b); vrGrabData = null;
+      ray.model.meshInstances[0].material = makeMat(0xEBD9D1, 0.65);
+      updateScoreDisplay();
+    });
+
+    source.on('remove', () => {
+      const r = ctrlRigs.get(source);
+      if (r) { r.rig.destroy(); ctrlRigs.delete(source); }
+    });
+  });
+}
+
+function getSourceRay(source) {
+  const origin = new pc.Vec3(), dir = new pc.Vec3(0, 0, -1);
+  try {
+    if (source.ray?.origin) { origin.copy(source.ray.origin); dir.copy(source.ray.direction); }
+    else { source.getPosition(origin); const q = new pc.Quat(); source.getRotation(q); q.transformVector(dir, dir); }
+  } catch(_) { try { source.getPosition(origin); } catch(_2){} }
+  return new pc.Ray(origin, dir.normalize());
+}
+
+function pickWithSource(source) {
+  const ray = getSourceRay(source);
+  let best = null, bestDist = 1.5;
+  for (const b of bricks) {
+    if (b.isPlaced) continue;
+    const bp = b.entity.getPosition();
+    const bb = new pc.BoundingBox(bp, new pc.Vec3(b.brickWidth/2, BRICK_H/2, BRICK_D/2));
+    const hit = new pc.Vec3();
+    if (bb.intersectsRay(ray, hit)) {
+      const d = ray.origin.distance(hit);
+      if (d < bestDist) { bestDist = d; best = b; }
+    }
+  }
+  if (!best) {
+    const reach = new pc.Vec3().copy(ray.origin).add(new pc.Vec3().copy(ray.direction).scale(0.9));
+    for (const b of bricks) {
+      if (b.isPlaced) continue;
+      const d = b.entity.getPosition().distance(reach);
+      if (d < 0.35 && d < bestDist) { bestDist = d; best = b; }
+    }
+  }
+  return best;
+}
+
+/* ================================================================
+   AR RETICLE + PLACEMENT
+   ================================================================ */
+function buildARReticle() {
+  const e = new pc.Entity('arReticle');
+  e.addComponent('model', { type: 'cylinder' });
+  e.model.meshInstances[0].material   = makeMat(0x4aa3ff, 0.85);
+  e.model.meshInstances[0].castShadow = false;
+  e.setLocalScale(0.22, 0.01, 0.22); e.enabled = false;
+  app.root.addChild(e); return e;
+}
+
+function placeStageAtReticle() {
+  if (!arReticleEntity?.enabled) { showToast('Aim at the floor first'); return; }
+  const pos = arReticleEntity.getPosition();
+  stageEntity.setPosition(pos.x, pos.y, pos.z);
+  const cp  = cameraEntity.getPosition();
+  stageEntity.setEulerAngles(0, Math.atan2(cp.x-pos.x, cp.z-pos.z)*pc.math.RAD_TO_DEG, 0);
+  stagePlaced = true; arReticleEntity.enabled = false;
+  document.getElementById('arControls').classList.add('visible');
+  showToast('Placed — start building');
+}
+
+/* ================================================================
+   XR SESSION EVENTS
+   ================================================================ */
+function onXRStart() {
+  if (floorEntity) floorEntity.enabled = !isAR;
+  showToast(isAR ? 'AR active — tap floor to place' : 'VR active');
+}
+
+function onXREnd() {
+  isAR = stagePlaced = false;
+  cameraEntity.camera.clearColor.set(0.53, 0.81, 0.92, 1);
+  if (floorEntity)     floorEntity.enabled = true;
+  if (arReticleEntity) arReticleEntity.enabled = false;
+  ctrlRigs.forEach(r => r.rig.destroy()); ctrlRigs.clear();
+  document.getElementById('arControls').classList.remove('visible');
+  applyOrbit(); showToast('XR session ended');
+}
+
+/* ================================================================
+   GAME LOOP
+   ================================================================ */
+app.on('update', dt => {
+  ctrlRigs.forEach((r, source) => {
+    const pos = new pc.Vec3(), rot = new pc.Quat();
+    try { source.getPosition(pos); source.getRotation(rot); } catch(_) { return; }
+    r.rig.setPosition(pos); r.rig.setRotation(rot);
+  });
+
+  if (app.xr?.active && vrGrabData) {
+    const { b, source } = vrGrabData;
+    const ray = getSourceRay(source);
+    const groundY = isAR ? stageEntity.getPosition().y : 0;
+    if (Math.abs(ray.direction.y) > 0.0001) {
+      const t = (groundY - ray.origin.y) / ray.direction.y;
+      if (t > 0) {
+        const nx = ray.origin.x + ray.direction.x*t;
+        const nz = ray.origin.z + ray.direction.z*t;
+        b.entity.setPosition(nx, getHoverY(nx, nz), nz);
+        highlightNearbySlots(nx, nz);
+      }
+    }
+  }
+
+  pulseSlots(dt);
+  const grabbed = selectedBrick || (vrGrabData?.b);
+  bricks.forEach(b => { if (b._glowMat) updateGlow(b, b === grabbed, dt); });
+
+  const t = Math.floor((Date.now()-startTime)/1000);
+  const el = document.getElementById('timeDisplay');
+  if (el) el.textContent = `Time: ${t}s`;
+});
+
+/* ================================================================
+   DESKTOP MOUSE INPUT
+   ================================================================ */
+if (app.mouse) {
+  app.mouse.on(pc.EVENT_MOUSEDOWN, e => {
+    if (e.button === pc.MOUSEBUTTON_RIGHT) {
+      orbit.active = true; orbit._lx = e.x; orbit._ly = e.y;
+    }
+    if (e.button === pc.MOUSEBUTTON_LEFT && !isMobile) {
+      const b = pickBrick(e.x, e.y);
+      if (!b) return;
+      releaseBrickFromSlot(b);
+      selectedBrick = b; audioGrab();
+      const hit = screenToGround(e.x, e.y);
+      if (hit) { const bp = b.entity.getPosition(); grabOffsetX = bp.x-hit.x; grabOffsetZ = bp.z-hit.z; }
+      if (navigator.vibrate) navigator.vibrate(15);
+    }
+  });
+
+  app.mouse.on(pc.EVENT_MOUSEMOVE, e => {
+    if (orbit.active) {
+      orbit.yaw   -= (e.dx||0) * 0.4;
+      orbit.pitch  = Math.max(5, Math.min(80, orbit.pitch - (e.dy||0)*0.4));
+      applyOrbit();
+    }
+    if (selectedBrick) {
+      const hit = screenToGround(e.x, e.y);
+      if (hit) {
+        const nx = hit.x+grabOffsetX, nz = hit.z+grabOffsetZ;
+        selectedBrick.entity.setPosition(nx, getHoverY(nx, nz), nz);
+        highlightNearbySlots(nx, nz);
+      }
+    }
+  });
+
+  app.mouse.on(pc.EVENT_MOUSEUP, e => {
+    if (e.button === pc.MOUSEBUTTON_RIGHT) orbit.active = false;
+    if (e.button === pc.MOUSEBUTTON_LEFT && selectedBrick) {
+      moves++;
+      snapToBrick(selectedBrick);
+      selectedBrick = null; updateScoreDisplay();
+    }
+  });
+
+  canvas.addEventListener('wheel', ev => {
+    orbit.radius = Math.max(0.8, Math.min(6, orbit.radius + ev.deltaY*0.005));
+    applyOrbit(); ev.preventDefault();
+  }, { passive: false });
+}
+
+/* ================================================================
+   MOBILE TOUCH INPUT
+   ================================================================ */
+if (app.touch) {
+  app.touch.on(pc.EVENT_TOUCHSTART, ev => {
+    if (isAR && !stagePlaced) { placeStageAtReticle(); return; }
+    if (mobileLookMode || activePointerId !== null) return;
+    const t0 = ev.changedTouches[0];
+    const b  = pickBrick(t0.x, t0.y);
+    if (!b) return;
+    activePointerId = t0.identifier;
+    releaseBrickFromSlot(b); selectedBrick = b; audioGrab();
+    const hit = screenToGround(t0.x, t0.y);
+    if (hit) { const bp = b.entity.getPosition(); grabOffsetX = bp.x-hit.x; grabOffsetZ = bp.z-hit.z; }
+  });
+
+  app.touch.on(pc.EVENT_TOUCHMOVE, ev => {
+    if (mobileLookMode || activePointerId === null || !selectedBrick) return;
+    for (const t of Array.from(ev.changedTouches)) {
+      if (t.identifier !== activePointerId) continue;
+      const hit = screenToGround(t.x, t.y);
+      if (hit) {
+        const nx = hit.x+grabOffsetX, nz = hit.z+grabOffsetZ;
+        selectedBrick.entity.setPosition(nx, getHoverY(nx, nz), nz);
+        highlightNearbySlots(nx, nz);
+      }
+    }
+  });
+
+  app.touch.on(pc.EVENT_TOUCHEND, ev => {
+    for (const t of Array.from(ev.changedTouches)) {
+      if (t.identifier !== activePointerId) continue;
+      activePointerId = null;
+      if (selectedBrick) { moves++; snapToBrick(selectedBrick); selectedBrick = null; updateScoreDisplay(); }
+    }
+  });
+}
+
+/* ================================================================
+   HUD
+   ================================================================ */
+function updateScoreDisplay() {
+  document.getElementById('scoreDisplay').textContent = `Score: ${score}`;
+  document.getElementById('moveDisplay').textContent  = `Moves: ${moves}`;
+}
+function renderStatusUI() {
+  document.getElementById('status').innerHTML = `
+    <div class="progress">
+      <div class="progress__label">0 / ${TOTAL_BRICKS} bricks</div>
+      <div class="progress__track"><div class="progress__bar" style="width:0%"></div></div>
+    </div>`;
+}
+function updateProgress() {
+  const pct = Math.min(100, (bricksPlaced/TOTAL_BRICKS)*100);
+  const bar = document.querySelector('.progress__bar'), label = document.querySelector('.progress__label');
+  if (bar)   bar.style.width = pct + '%';
+  if (label) label.textContent = `${bricksPlaced} / ${TOTAL_BRICKS} bricks`;
+}
+
+/* ================================================================
+   UI BUTTONS
+   ================================================================ */
+document.getElementById('resetButton').addEventListener('click', resetGame);
+document.getElementById('helpButton').addEventListener('click', () => {
+  const h = document.getElementById('helpOverlay');
+  h.style.display = h.style.display === 'none' ? 'block' : 'none';
+});
+document.getElementById('closeHelpBtn').addEventListener('click', () => {
+  document.getElementById('helpOverlay').style.display = 'none';
+});
+
+if (isMobile) {
+  const lt = document.getElementById('lookToggle'); lt.style.display = 'block';
+  lt.addEventListener('click', () => {
+    mobileLookMode = !mobileLookMode;
+    lt.textContent = mobileLookMode ? 'Look: On' : 'Look: Off';
+    lt.setAttribute('aria-pressed', String(mobileLookMode));
+    showToast(mobileLookMode ? 'Look mode on' : 'Build mode on');
+  });
+}
+
+document.getElementById('vrButton').addEventListener('click', () => {
+  if (!app.xr?.supported) { showToast('WebXR not supported'); return; }
+  if (!app.xr.isAvailable(pc.XRTYPE_VR)) { showToast('VR not available on this device'); return; }
+  isAR = false; cameraEntity.camera.clearColor.set(0.53, 0.81, 0.92, 1);
+  app.xr.start(cameraEntity.camera, pc.XRTYPE_VR, pc.XRSPACE_LOCALFLOOR, {
+    callback: err => { if (err) showToast('Could not start VR'); else setupVRInput(); }
+  });
+});
+
+document.getElementById('arButton').addEventListener('click', () => {
+  if (!app.xr?.supported) { showToast('WebXR not supported'); return; }
+  if (!app.xr.isAvailable(pc.XRTYPE_AR)) {
+    showToast('AR not available on this device');
+    const h = document.getElementById('arHint'); h.style.display = 'block';
+    setTimeout(() => { h.style.display = 'none'; }, 3000); return;
+  }
+  isAR = true; stagePlaced = false; cameraEntity.camera.clearColor.set(0, 0, 0, 0);
+  app.xr.start(cameraEntity.camera, pc.XRTYPE_AR, pc.XRSPACE_LOCALFLOOR, {
+    optionalFeatures: ['hit-test'],
+    callback: err => {
+      if (err) { showToast('Could not start AR'); isAR = false; return; }
+      setupVRInput();
+      if (app.xr.hitTest?.supported) {
+        app.xr.hitTest.start({ spaceType: pc.XRSPACE_VIEWER, callback: (htErr, src) => {
+          if (htErr || !src) return;
+          src.on('result', pos => { if (stagePlaced) return; arReticleEntity.setPosition(pos); arReticleEntity.enabled = true; });
+        }});
+      }
+      showToast('Point at the floor to place the wall');
+    }
+  });
+});
+
+document.getElementById('arReplace').addEventListener('click', () => {
+  stagePlaced = false; if (arReticleEntity) arReticleEntity.enabled = false;
+  document.getElementById('arControls').classList.remove('visible');
+  showToast('Point at the floor to re-place');
+});
+document.getElementById('arRotLeft').addEventListener('click',  () => { const ea = stageEntity.getEulerAngles(); stageEntity.setEulerAngles(ea.x, ea.y+15, ea.z); });
+document.getElementById('arRotRight').addEventListener('click', () => { const ea = stageEntity.getEulerAngles(); stageEntity.setEulerAngles(ea.x, ea.y-15, ea.z); });
+document.getElementById('arScaleDown').addEventListener('click', () => { const s = stageEntity.getLocalScale(); const n = Math.max(0.3, s.x-0.15); stageEntity.setLocalScale(n,n,n); });
+document.getElementById('arScaleUp').addEventListener('click',   () => { const s = stageEntity.getLocalScale(); const n = Math.min(2.5, s.x+0.15); stageEntity.setLocalScale(n,n,n); });
+
+/* ================================================================
+   INIT — build the scene and start
+   ================================================================ */
+stageEntity = new pc.Entity('stage');
+app.root.addChild(stageEntity);
+
+cameraEntity = new pc.Entity('camera');
+cameraEntity.addComponent('camera', { clearColor: new pc.Color(0.53, 0.81, 0.92, 1), nearClip: 0.1, farClip: 100 });
+app.root.addChild(cameraEntity);
+applyOrbit();
+
+const ambient = new pc.Entity('ambient');
+ambient.addComponent('light', { type: 'omni', color: new pc.Color(0.96, 0.95, 0.91), intensity: 0.5, castShadows: false, range: 200 });
+app.root.addChild(ambient);
+
+const dirLight = new pc.Entity('dirLight');
+dirLight.addComponent('light', { type: 'directional', color: new pc.Color(1,1,1), intensity: 0.9, castShadows: true, shadowResolution: 1024, shadowBias: 0.1, normalOffsetBias: 0.06 });
+dirLight.setEulerAngles(45, -30, 0);
+app.root.addChild(dirLight);
+
+const rimLight = new pc.Entity('rimLight');
+rimLight.addComponent('light', { type: 'directional', color: new pc.Color(0.72, 0.78, 0.85), intensity: 0.28, castShadows: false });
+rimLight.setEulerAngles(-30, 150, 0);
+app.root.addChild(rimLight);
+
+floorEntity = new pc.Entity('floor');
+floorEntity.addComponent('model', { type: 'plane' });
+floorEntity.model.meshInstances[0].material   = makeMat(0xf7f4ea);
+floorEntity.model.meshInstances[0].castShadow = false;
+floorEntity.setLocalScale(20, 1, 20); floorEntity.setPosition(0, FLOOR_Y, 0);
+stageEntity.addChild(floorEntity);
+
+const ring = new pc.Entity('ring');
+ring.addComponent('model', { type: 'cylinder' });
+ring.model.meshInstances[0].material   = makeMat(0x556B6F, 0.15);
+ring.model.meshInstances[0].castShadow = false;
+ring.setLocalScale(2.84, 0.005, 2.84); ring.setPosition(0, FLOOR_Y+0.01, WALL_Z);
+stageEntity.addChild(ring);
+
+const wallW = COLS * (BRICK_W + GAP_X) + 0.4;
+const wallH = ROWS * (BRICK_H + GAP_Y) + 0.15;
+const wallBackdrop = new pc.Entity('wallBackdrop');
+wallBackdrop.addComponent('model', { type: 'plane' });
+wallBackdrop.model.meshInstances[0].material   = makeMat(0xD4C5B0, 0.6);
+wallBackdrop.model.meshInstances[0].castShadow = false;
+wallBackdrop.setEulerAngles(90, 0, 0);
+wallBackdrop.setLocalScale(wallW, 1, wallH);
+wallBackdrop.setPosition(0, ROW1_Y + (ROWS-1)*(BRICK_H+GAP_Y)*0.5, WALL_Z - 0.12);
+stageEntity.addChild(wallBackdrop);
+
+arReticleEntity = buildARReticle();
+
+if (app.xr?.supported) { app.xr.on('start', onXRStart); app.xr.on('end', onXREnd); }
+
+rebuildBrickPositions();
+TOTAL_BRICKS = ROWS*COLS + HALF_POSITIONS.length;
+createSlotMarkers(); setRowVisibility(0); spawnNextBrick();
+renderStatusUI(); updateScoreDisplay();

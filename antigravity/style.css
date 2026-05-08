@@ -1,0 +1,59 @@
+body { margin:0; background:#F7F4EA; color:#1B1A17; font-family:Arial,sans-serif; overflow:hidden; touch-action:none; }
+#appCanvas { position:absolute; top:0; left:0; width:100%; height:100%; display:block; }
+#uiOverlay {
+  position:absolute; top:12px; left:12px; z-index:1000;
+  background:rgba(247,244,234,.85); border:1px solid rgba(184,124,76,.35);
+  backdrop-filter:blur(6px); padding:12px 14px; border-radius:12px; max-width:320px; line-height:1.3;
+}
+#uiOverlay h2 { margin:0 0 8px; font-size:18px; font-weight:700; color:#B87C4C; }
+#scoreDisplay,#moveDisplay,#timeDisplay { font-size:14px; margin:4px 0; opacity:.95; }
+#helpOverlay {
+  position:absolute; bottom:12px; left:12px; z-index:1000;
+  background:rgba(235,217,209,.88); border:1px solid rgba(184,124,76,.35);
+  backdrop-filter:blur(6px); padding:10px 12px 12px; border-radius:12px; max-width:520px; font-size:13px;
+}
+#helpOverlay .closeHelp {
+  position:absolute; top:6px; right:8px; border:none; border-radius:8px;
+  padding:4px 8px; cursor:pointer; background:#B87C4C; color:#F7F4EA; font-size:12px;
+}
+#vrButton,#arButton,#resetButton,#helpButton,#lookToggle {
+  position:absolute; right:20px; padding:10px 18px; border:none; border-radius:10px;
+  font-size:14px; cursor:pointer; color:#F7F4EA; background:#B87C4C;
+  box-shadow:0 6px 16px rgba(0,0,0,.15); transition:transform .08s ease,opacity .15s ease;
+}
+#vrButton:hover,#arButton:hover,#resetButton:hover,#helpButton:hover,#lookToggle:hover { transform:translateY(-1px); opacity:.95; }
+#vrButton { bottom:20px; } #arButton { bottom:66px; } #resetButton { bottom:112px; }
+#helpButton { bottom:158px; } #lookToggle { bottom:204px; display:none; }
+#status {
+  position:absolute; top:12px; right:12px; z-index:1000;
+  background:rgba(247,244,234,.85); border:1px solid rgba(184,124,76,.35);
+  backdrop-filter:blur(6px); padding:10px 12px; border-radius:12px; font-size:13px; min-width:180px; text-align:right;
+}
+#status .progress { display:flex; flex-direction:column; gap:6px; }
+#status .progress__label { font-size:12px; text-align:right; opacity:.95; }
+#status .progress__track { height:8px; border-radius:999px; background:rgba(168,187,163,.25); overflow:hidden; }
+#status .progress__bar { height:100%; width:0%; background:linear-gradient(90deg,#A8BBA3,#B87C4C); border-radius:999px; transition:width 180ms ease; }
+.toast {
+  position:absolute; left:50%; top:72px; transform:translateX(-50%); z-index:1000;
+  background:rgba(235,217,209,.92); border:1px solid rgba(184,124,76,.35);
+  padding:12px 16px; border-radius:12px; max-width:320px; font-size:14px; pointer-events:none;
+}
+#arHint {
+  position:absolute; bottom:12px; left:50%; transform:translateX(-50%);
+  background:rgba(47,47,47,.8); color:#fff; padding:8px 12px; border-radius:8px;
+  font-size:12px; display:none; z-index:1000;
+}
+#arControls {
+  display:none; position:absolute; bottom:20px; left:50%; transform:translateX(-50%); z-index:1000;
+  background:rgba(247,244,234,.88); border:1px solid rgba(184,124,76,.35); backdrop-filter:blur(6px);
+  border-radius:16px; padding:10px 14px; gap:8px; align-items:center; flex-wrap:wrap;
+  justify-content:center; max-width:340px;
+}
+#arControls.visible { display:flex; }
+#arControls .ar-label { width:100%; text-align:center; font-size:11px; color:#B87C4C; margin-bottom:2px; }
+.ar-ctrl-btn {
+  padding:10px 15px; border:none; border-radius:10px; font-size:16px; cursor:pointer;
+  color:#F7F4EA; background:#B87C4C; min-width:48px; text-align:center; -webkit-tap-highlight-color:transparent;
+}
+.ar-ctrl-btn:active { transform:scale(0.93); opacity:.85; }
+.ar-ctrl-btn.secondary { background:#A8BBA3; }
