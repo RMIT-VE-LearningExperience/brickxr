@@ -355,18 +355,52 @@
     window.addEventListener('resize', () => app.resizeCanvas());
 
     /* ================================================================
-       PHYSICS BOOT  — load Ammo WASM, then start everything
+       PHYSICS BOOT  — load Ammo WASM then start; fall back after 5 s
+       so a CDN miss never leaves the user on a blank screen.
        ================================================================ */
-    pc.WasmModule.setConfig('Ammo', {
-      glueUrl:     'https://cdn.jsdelivr.net/npm/playcanvas/build/ammo.wasm.js',
-      wasmUrl:     'https://cdn.jsdelivr.net/npm/playcanvas/build/ammo.wasm.wasm',
-      fallbackUrl: 'https://cdn.jsdelivr.net/npm/playcanvas/build/ammo.js'
-    });
-    pc.WasmModule.getInstance('Ammo', () => {
-      app.systems.rigidbody.gravity.set(0, -9.81, 0);
+    let _physicsOK = false;
+
+    function _boot() {
+      if (_physicsOK) {
+        try { app.systems.rigidbody.gravity.set(0, -9.81, 0); } catch (_) {}
+      }
+      const loader = document.getElementById('_loader');
+      if (loader) loader.remove();
       app.start();
       init();
+    }
+
+    // Loading indicator shown while Ammo downloads
+    const _loaderEl = document.createElement('div');
+    _loaderEl.id = '_loader';
+    Object.assign(_loaderEl.style, {
+      position: 'fixed', inset: '0', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', zIndex: '9999', pointerEvents: 'none',
+      fontSize: '14px', color: '#B87C4C', fontFamily: 'Arial,sans-serif'
     });
+    _loaderEl.textContent = 'Loading physics…';
+    document.body.appendChild(_loaderEl);
+
+    const _physicsTimeout = setTimeout(() => {
+      console.warn('BrickXR: Ammo.js did not load in time — starting without physics');
+      _boot();
+    }, 5000);
+
+    try {
+      pc.WasmModule.setConfig('Ammo', {
+        glueUrl:     'https://cdn.jsdelivr.net/npm/playcanvas/build/ammo.wasm.js',
+        wasmUrl:     'https://cdn.jsdelivr.net/npm/playcanvas/build/ammo.wasm.wasm',
+        fallbackUrl: 'https://cdn.jsdelivr.net/npm/playcanvas/build/ammo.js'
+      });
+      pc.WasmModule.getInstance('Ammo', () => {
+        clearTimeout(_physicsTimeout);
+        _physicsOK = true;
+        _boot();
+      });
+    } catch (e) {
+      clearTimeout(_physicsTimeout);
+      _boot();
+    }
 
     /* ================================================================
        GAME STATE
@@ -589,19 +623,21 @@
       e.model.meshInstances[0].castShadow = true;
       e.setLocalScale(w, BRICK_H, BRICK_D);
 
-      // Physics
-      e.addComponent('collision', {
-        type: 'box',
-        halfExtents: new pc.Vec3(w / 2, BRICK_H / 2, BRICK_D / 2)
-      });
-      e.addComponent('rigidbody', {
-        type:             pc.BODYTYPE_DYNAMIC,
-        mass:             0.4,
-        friction:         0.7,
-        restitution:      0.05,
-        linearDamping:    0.6,
-        angularDamping:   0.9
-      });
+      // Physics (only when Ammo loaded successfully)
+      if (_physicsOK) {
+        e.addComponent('collision', {
+          type: 'box',
+          halfExtents: new pc.Vec3(w / 2, BRICK_H / 2, BRICK_D / 2)
+        });
+        e.addComponent('rigidbody', {
+          type:          pc.BODYTYPE_DYNAMIC,
+          mass:          0.4,
+          friction:      0.7,
+          restitution:   0.05,
+          linearDamping: 0.6,
+          angularDamping: 0.9
+        });
+      }
 
       const jx = (Math.random() - 0.5) * 0.1;
       const jz = (Math.random() - 0.5) * 0.1;
@@ -1156,8 +1192,10 @@
       floorEntity.model.meshInstances[0].castShadow = false;
       floorEntity.setLocalScale(20, 1, 20);
       floorEntity.setPosition(0, FLOOR_Y, 0);
-      floorEntity.addComponent('collision', { type: 'box', halfExtents: new pc.Vec3(15, 0.05, 15) });
-      floorEntity.addComponent('rigidbody', { type: pc.BODYTYPE_STATIC, friction: 0.8, restitution: 0.05 });
+      if (_physicsOK) {
+        floorEntity.addComponent('collision', { type: 'box', halfExtents: new pc.Vec3(15, 0.05, 15) });
+        floorEntity.addComponent('rigidbody', { type: pc.BODYTYPE_STATIC, friction: 0.8, restitution: 0.05 });
+      }
       stageEntity.addChild(floorEntity);
 
       // Boundary ring (visual only)
